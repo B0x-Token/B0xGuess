@@ -1039,12 +1039,20 @@ contract B0xGuess is VRFV2PlusWrapperConsumerBase {
         emit ShowAnswer(odds, randomness % 100, betAmount, betid, Guesser, winnings[betid], randomness);
         betid++;
     }
+    
+    
+    /// @notice Stakes `amount` of stakedToken on behalf of `msg.sender`, minting staking shares
+    /// @dev Stake and become the house
+    /// @param amount The amount of stakedToken to stake
+    function stake(uint256 amount) public virtual {
+    	stakeForSomeoneElse(msg.sender, amount);
+    }
 
     /// @notice Stakes `amount` of stakedToken on behalf of `forWhom`, minting staking shares
     /// @dev Stake and become the house
     /// @param forWhom The address to credit with the newly minted staking shares
     /// @param amount The amount of stakedToken to stake
-    function stakeFor(address forWhom, uint256 amount) public virtual {
+    function stakeForSomeoneElse(address forWhom, uint256 amount) public virtual {
         IERC20 st = stakedToken;
         require(amount > 0, "Cannot stake 0");
 

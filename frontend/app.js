@@ -80,6 +80,7 @@ const els = {
   winChanceValue: document.getElementById("win-chance-value"),
   winChanceFraction: document.getElementById("win-chance-fraction"),
   betAmountInput: document.getElementById("bet-amount-input"),
+  betAmountMaxBtn: document.getElementById("bet-amount-max-btn"),
   estPayout: document.getElementById("est-payout"),
   estMaxbet: document.getElementById("est-maxbet"),
   estLinkCost: document.getElementById("est-link-cost"),
@@ -246,6 +247,11 @@ let pendingBetPollTimer = null;
 // text in refreshWalletInfo() — kept as a bigint so the Stake "Max" button
 // can fill the input exactly, without reparsing a rounded display string.
 let userB0xBalanceWei = 0n;
+
+// MaxINForGuess(guess) result for the currently selected guess, kept as a
+// bigint so the Bet "Max" button can compare it against userB0xBalanceWei
+// without reparsing a rounded display string.
+let currentMaxBetWei = 0n;
 
 // --- Formatting helpers ---
 function fmt(bigintValue, decimals, digits = 4) {
@@ -416,7 +422,7 @@ async function refreshAll() {
     { contract: b0xGuessRead, method: "balanceOf", args: [userAddress] }, // 6 shares
     { contract: b0xGuessRead, method: "totalSupply" }, // 7 totalShares
     // currentForge() -> uOut() divides by the contract's net staked bankroll,
-    // which is still 0 until someone calls stakeFor() for the first time —
+    // which is still 0 until someone calls stake() for the first time —
     // that division reverts. allowFailure isolates just this slot.
     { contract: b0xGuessRead, method: "currentForge", args: [userAddress], allowFailure: true }, // 8 withdrawable
     { contract: b0xGuessRead, method: "owner" }, // 9
@@ -533,6 +539,7 @@ async function refreshBetEstimateInner() {
 }
 
 function applyBetEstimate({ guess, hasAmount, amtWei, maxBet, userLinkBal, positionSize, quoted, freeBetLink, contractLinkBal, payout }) {
+  currentMaxBetWei = maxBet;
   els.estMaxbet.textContent = fmt(maxBet, stakedDecimals) + " B0x";
   els.statLinkBalance.textContent = fmt(userLinkBal, LINK_DECIMALS, 6) + " LINK";
 
@@ -923,7 +930,7 @@ async function stake() {
     await ensureAllowance(stakedTokenRead, stakedTokenWrite, userAddress, B0XGUESS_ADDRESS, amtWei, els.stakeStatus, "B0x");
 
     setStatus(els.stakeStatus, "Staking...");
-    const tx = await b0xGuessWrite.stakeFor(userAddress, amtWei);
+    const tx = await b0xGuessWrite.stake(amtWei);
     await tx.wait();
 
     setStatus(els.stakeStatus, "Staked successfully.", "success");
@@ -1257,6 +1264,11 @@ els.guessNumberInput.addEventListener("blur", () => {
 updateWinChance();
 
 els.betAmountInput.addEventListener("input", scheduleEstimate);
+els.betAmountMaxBtn.addEventListener("click", () => {
+  const maxWei = currentMaxBetWei < userB0xBalanceWei ? currentMaxBetWei : userB0xBalanceWei;
+  els.betAmountInput.value = ethers.formatUnits(maxWei, stakedDecimals);
+  scheduleEstimate();
+});
 els.placeBetBtn.addEventListener("click", placeBet);
 els.buyLinkBtn.addEventListener("click", buyLink);
 els.myBetsLoadMoreBtn.addEventListener("click", () => loadMyBets(false));

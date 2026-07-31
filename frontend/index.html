@@ -21,12 +21,14 @@
 
   <header class="topbar">
     <h1>B0x <span class="accent-text">Guess</span><span class="topbar-tagline">Interstellar Wagering Protocol</span></h1>
-    <a class="topbar-link" href="https://dev.bzerox.org/#how-to-b0x-guess" target="_blank" rel="noopener noreferrer">How to Guides</a>
-    <div class="wallet-box">
-      <span id="network-badge" class="badge hidden">Base</span>
-      <span id="wallet-address" class="hidden"></span>
-      <span id="wallet-b0x-balance" class="badge hidden"></span>
-      <button id="connect-btn">Connect Wallet</button>
+    <div class="topbar-right">
+      <a class="topbar-link" href="https://dev.bzerox.org/#how-to-b0x-guess" target="_blank" rel="noopener noreferrer">How to Guides</a>
+      <div class="wallet-box">
+        <span id="network-badge" class="badge hidden">Base</span>
+        <span id="wallet-address" class="hidden"></span>
+        <span id="wallet-b0x-balance" class="badge hidden"></span>
+        <button id="connect-btn">Connect Wallet</button>
+      </div>
     </div>
   </header>
 
@@ -65,7 +67,10 @@
 
       <label>
         Bet amount (B0x)
-        <input type="number" id="bet-amount-input" min="0.01" step="0.01" placeholder="0.0" />
+        <div class="amount-row">
+          <input type="number" id="bet-amount-input" min="0.01" step="0.01" placeholder="0.0" />
+          <button type="button" id="bet-amount-max-btn" class="secondary">Max</button>
+        </div>
       </label>
 
       <div class="stat-grid">

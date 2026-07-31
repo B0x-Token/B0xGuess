@@ -30,6 +30,7 @@ html {
 
 body {
   margin: 0;
+  overflow-x: hidden;
   font-family: var(--font-body);
   color: var(--text);
   line-height: 1.5;
@@ -63,6 +64,8 @@ h1, h2, h3 { font-family: var(--font-display); letter-spacing: 0.03em; }
 
 .topbar {
   display: flex;
+  flex-wrap: wrap;
+  row-gap: 0.6rem;
   justify-content: space-between;
   align-items: center;
   padding: 1rem 1.5rem;
@@ -103,7 +106,15 @@ h1, h2, h3 { font-family: var(--font-display); letter-spacing: 0.03em; }
   color: var(--text-dim);
 }
 
-.wallet-box { display: flex; align-items: center; gap: 0.75rem; }
+.topbar-right {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.9rem;
+}
+
+.wallet-box { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 0.75rem; }
 
 .topbar-link { color: var(--accent); text-decoration: none; font-weight: 600; font-size: 0.95rem; }
 .topbar-link:hover { color: var(--accent3); text-decoration: underline; }
@@ -303,7 +314,7 @@ button.needs-link:hover { color: #201400; }
 
 .stat-grid {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
   gap: 0.7rem 1rem;
   margin-top: 0.75rem;
 }
@@ -653,4 +664,11 @@ footer a { color: var(--accent); }
 
 @media (max-width: 480px) {
   .modal-panel { padding: 1.8rem 1.25rem 1.25rem; }
+}
+
+@media (max-width: 850px) {
+  .topbar {
+    position: static;
+    padding: 0.6rem 1rem;
+  }
 }
