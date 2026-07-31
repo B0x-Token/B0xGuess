@@ -1,0 +1,152 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>B0x Guess — Base</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+
+  <header class="topbar">
+    <h1>B0x Guess</h1>
+    <div class="wallet-box">
+      <span id="network-badge" class="badge hidden">Base</span>
+      <span id="wallet-address" class="hidden"></span>
+      <button id="connect-btn">Connect Wallet</button>
+    </div>
+  </header>
+
+  <main id="app" class="hidden">
+
+    <!-- Pool / price info -->
+    <section class="card">
+      <h2>House Stats</h2>
+      <div class="stat-grid">
+        <div class="stat"><span class="label">B0x price (USD)</span><span id="stat-price">—</span></div>
+        <div class="stat"><span class="label">Pool balance</span><span id="stat-pool">—</span></div>
+        <div class="stat"><span class="label">Position size</span><span id="stat-position">—</span></div>
+        <div class="stat"><span class="label">Min bet</span><span id="stat-minbet">—</span></div>
+        <div class="stat"><span class="label">VRF request price</span><span id="stat-vrfprice">—</span></div>
+        <div class="stat"><span class="label">LINK rebate</span><span id="stat-freebet">—</span></div>
+      </div>
+    </section>
+
+    <!-- Play -->
+    <section class="card">
+      <h2>Play</h2>
+      <p class="hint">Guess a number between 1 and 97. A random number from 0–99 is drawn — you win if it's
+        <em>below</em> your guess. Lower guesses pay out more per B0x wagered.</p>
+
+      <label>
+        Your guess (1–97)
+        <div class="guess-row">
+          <input type="range" id="guess-input" min="1" max="97" value="50" />
+          <input type="number" id="guess-number-input" min="1" max="97" step="1" value="50" />
+        </div>
+      </label>
+
+      <label>
+        Bet amount (B0x)
+        <input type="number" id="bet-amount-input" min="0.01" step="0.01" placeholder="0.0" />
+      </label>
+
+      <div class="stat-grid">
+        <div class="stat"><span class="label">Potential payout</span><span id="est-payout">—</span></div>
+        <div class="stat"><span class="label">Max bet at this guess</span><span id="est-maxbet">—</span></div>
+        <div class="stat"><span class="label">Est. LINK cost (yours)</span><span id="est-link-cost">—</span></div>
+        <div class="stat"><span class="label">Your LINK balance</span><span id="stat-link-balance">—</span></div>
+      </div>
+
+      <p id="bet-warning" class="warning hidden"></p>
+
+      <button id="place-bet-btn">Place Bet</button>
+      <p id="bet-status" class="status"></p>
+    </section>
+
+    <!-- Stake / become the house -->
+    <section class="card">
+      <h2>Stake — Become the House</h2>
+      <p class="hint">Staked B0x becomes bankroll that pays out winners. You earn a share of losing bets,
+        minus a 2.5% withdrawal fee.</p>
+
+      <label>
+        Amount to stake (B0x)
+        <input type="number" id="stake-amount-input" min="0" step="any" placeholder="0.0" />
+      </label>
+      <button id="stake-btn">Stake</button>
+      <p id="stake-status" class="status"></p>
+
+      <div class="stat-grid">
+        <div class="stat"><span class="label">Your stake shares</span><span id="stat-shares">—</span></div>
+        <div class="stat"><span class="label">Withdrawable value</span><span id="stat-withdrawable">—</span></div>
+        <div class="stat"><span class="label">Lifetime profit</span><span id="stat-profit">—</span></div>
+      </div>
+
+      <label>
+        Max acceptable pending payouts (defaults to current value)
+        <input type="number" id="max-loss-input" min="0" step="any" placeholder="0.0" />
+      </label>
+      <button id="withdraw-all-btn">Withdraw All</button>
+      <p id="withdraw-status" class="status"></p>
+    </section>
+
+    <!-- Recent activity -->
+    <section class="card">
+      <h2>Recent Activity</h2>
+      <ul id="activity-feed" class="activity-feed"></ul>
+    </section>
+
+    <!-- Advanced: manual VRF top-up, for when a request seems stuck -->
+    <details class="card">
+      <summary>Advanced: Buy Extra VRF Request</summary>
+      <p class="hint">If Chainlink seems stuck, anyone can pay for an extra "blank" randomness request to help
+        clear the queue. This costs LINK and does not affect your own bet.</p>
+      <label>
+        Number of VRF unit-prices to pay
+        <input type="number" id="blank-amount-input" min="1" step="1" value="1" />
+      </label>
+      <button id="get-blank-btn">Buy Extra Request</button>
+      <p id="blank-status" class="status"></p>
+    </details>
+
+    <!-- Owner-only controls, shown only if the connected wallet is the contract owner -->
+    <section id="owner-panel" class="card hidden">
+      <h2>Owner Controls</h2>
+
+      <div class="owner-row">
+        <span>Position-size checkpoint ready to advance:</span>
+        <span id="checkpoint-ready">—</span>
+        <button id="checkpoint-btn">Run Checkpoint</button>
+      </div>
+
+      <label>
+        New LINK rebate amount
+        <input type="number" id="free-bet-input" min="0" step="any" placeholder="0.0" />
+      </label>
+      <button id="set-free-bet-btn">Set Rebate</button>
+
+      <label>
+        Transfer ownership to
+        <input type="text" id="new-owner-input" placeholder="0x..." />
+      </label>
+      <button id="transfer-owner-btn">Transfer Ownership</button>
+
+      <p id="owner-status" class="status"></p>
+    </section>
+
+  </main>
+
+  <p id="connect-hint">Connect a wallet on the Base network to play.</p>
+
+  <footer>
+    <a href="https://basescan.org/address/0xE55B36c9Be6Fca80D78c36907F15Fd03b33a42C0" target="_blank" rel="noopener">
+      View contract on BaseScan
+    </a>
+  </footer>
+
+  <script src="https://cdn.jsdelivr.net/npm/ethers@6.13.4/dist/ethers.umd.min.js"></script>
+  <script src="config.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
