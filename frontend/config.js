@@ -9,12 +9,37 @@ const BASE_NETWORK_PARAMS = {
   chainId: BASE_CHAIN_ID_HEX,
   chainName: "Base",
   nativeCurrency: { name: "Ether", symbol: "ETH", decimals: 18 },
-  rpcUrls: ["https://mainnet.base.org"],
+  // Listed in fallback order for wallets adding Base for the first time via
+  // this dapp (wallet_addEthereumChain). Doesn't affect wallets that already
+  // have Base configured — that RPC choice lives in the wallet's own settings.
+  rpcUrls: ["https://mainnet.base.org", "https://base.llamarpc.com", "https://1rpc.io/base"],
   blockExplorerUrls: ["https://basescan.org"],
 };
 
+// --- RPC used for all contract reads / event polling ---
+// Deliberately separate from the wallet's own RPC (used only to sign and
+// send transactions, via BrowserProvider/window.ethereum) — the wallet's
+// request budget shouldn't have to absorb the read-heavy polling this dapp
+// does (bet estimates, activity feed, block-range log queries). User-editable
+// at the bottom of the page; persisted in localStorage.
+const DEFAULT_RPC_URL = "https://gateway.tenderly.co/public/base";
+const RPC_URL_STORAGE_KEY = "b0xguess_rpc_url";
+
+function getRpcUrl() {
+  return localStorage.getItem(RPC_URL_STORAGE_KEY) || DEFAULT_RPC_URL;
+}
+
+// --- Multicall3 — deployed at this same address on nearly every EVM chain
+// (Base included) via a deterministic deployer. Used to batch almost every
+// read in app.js into one eth_call instead of one per field. ---
+const MULTICALL3_ADDRESS = "0xcA11bde05977b3631167028862bE2a173976CA11";
+const MULTICALL3_ABI = [
+  "function aggregate3(tuple(address target, bool allowFailure, bytes callData)[] calls) payable returns (tuple(bool success, bytes returnData)[] returnData)",
+  "function getEthBalance(address addr) view returns (uint256 balance)",
+];
+
 // --- Deployed addresses (Base mainnet) ---
-const B0XGUESS_ADDRESS = "0x759f9AB16476e5671e5dB20504103a46e362863B";
+const B0XGUESS_ADDRESS = "0x69c0C0A4a28A13302a9c827c37fDe081A4E0c60E";
 const STAKED_TOKEN_ADDRESS = "0x6B19E31C1813cD00b0d47d798601414b79A3e8AD"; // B0x
 const LINK_TOKEN_ADDRESS = "0x88Fb150BDc53A65fe94Dea0c9BA0a6dAf8C6e196"; // hardcoded in B0xGuess.sol's constructor
 
@@ -56,14 +81,12 @@ const B0XGUESS_ABI = [
   "function withdraw(uint256 amount, uint256 maxLoss)",
   "function perfectWithdraw(uint256 maxLoss)",
   "function setAmountWeOwePerPosition()",
-  "function setFreeBetLink(uint256 newAmount)",
+  "function setFreeBetLink()",
   "function transferOwnership(address newOwner)",
 
   // events
   "event GuessNote(uint256 UsersGuess, uint256 amount, address indexed user, uint256 betID)",
   "event ShowAnswer(uint256 UsersGuess, uint256 Result, uint256 amountWagered, uint256 betID, address indexed AddressOfGuesser, uint256 AmountWon, uint256 chainlinkRandom)",
-  "event Staked(address indexed user, uint256 amount)",
-  "event Withdrawn(address indexed user, uint256 amount)",
 ];
 
 // --- Minimal ERC-20 ABI, used for both B0x and LINK ---

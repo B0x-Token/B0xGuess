@@ -48,6 +48,14 @@ const ETH_GAS_RESERVE = "0.0002"; // left unspent so the wallet can still pay ga
 // connect/reload.
 const ACTIVITY_HISTORY_BET_COUNT = 20;
 
+// How often to poll for new ShowAnswer events (recent guesses) to append to
+// "Recent Activity" live. Not correctness-critical (your own bet result and
+// My Bets/wallet-balance refresh are already covered independently by
+// checkPendingBet()'s 5s poll) — this only feeds the public activity feed,
+// so it doesn't need block-level (~2s on Base) granularity. Staked/Withdrawn
+// aren't tracked here — only guesses matter for this feed.
+const ACTIVITY_POLL_INTERVAL_MS = 40000;
+
 // How many of your own bets "My Bets" fetches per page, via
 // getUserBetIds() — requires the redeployed contract (see B0xGuess.sol).
 const MY_BETS_PAGE_SIZE = 10;
@@ -106,13 +114,17 @@ const els = {
   ownerPanel: document.getElementById("owner-panel"),
   checkpointReady: document.getElementById("checkpoint-ready"),
   checkpointBtn: document.getElementById("checkpoint-btn"),
-  freeBetInput: document.getElementById("free-bet-input"),
   setFreeBetBtn: document.getElementById("set-free-bet-btn"),
   newOwnerInput: document.getElementById("new-owner-input"),
   transferOwnerBtn: document.getElementById("transfer-owner-btn"),
   ownerStatus: document.getElementById("owner-status"),
 
   contractLink: document.getElementById("contract-link"),
+
+  rpcUrlInput: document.getElementById("rpc-url-input"),
+  rpcUrlSaveBtn: document.getElementById("rpc-url-save-btn"),
+  rpcUrlResetBtn: document.getElementById("rpc-url-reset-btn"),
+  rpcUrlStatus: document.getElementById("rpc-url-status"),
 
   modalOverlay: document.getElementById("bet-modal-overlay"),
   modalEl: document.getElementById("bet-modal"),
@@ -137,6 +149,77 @@ els.contractLink.href = `${BASE_NETWORK_PARAMS.blockExplorerUrls[0]}/address/${B
 els.betAmountInput.min = String(MIN_BET_B0X);
 els.betAmountInput.step = String(MIN_BET_B0X);
 
+// --- Read RPC (all contract reads/log polling go through this, never the
+// wallet) — set up immediately at script load, independent of wallet
+// connection, so the setting below can be changed at any time. ---
+const readProvider = new ethers.JsonRpcProvider(getRpcUrl());
+
+els.rpcUrlInput.value = getRpcUrl();
+
+els.rpcUrlSaveBtn.addEventListener("click", () => {
+  const url = els.rpcUrlInput.value.trim();
+  if (!url || !/^https?:\/\//i.test(url)) {
+    setStatus(els.rpcUrlStatus, "Enter a valid http(s) RPC URL.", "error");
+    return;
+  }
+  localStorage.setItem(RPC_URL_STORAGE_KEY, url);
+  setStatus(els.rpcUrlStatus, "Saved. Reloading…", "success");
+  window.location.reload();
+});
+
+els.rpcUrlResetBtn.addEventListener("click", () => {
+  localStorage.removeItem(RPC_URL_STORAGE_KEY);
+  els.rpcUrlInput.value = DEFAULT_RPC_URL;
+  setStatus(els.rpcUrlStatus, "Reset to default. Reloading…", "success");
+  window.location.reload();
+});
+
+// --- Multicall ---
+// Nearly every read in this file goes through this instead of calling
+// contracts directly, so a screen refresh/poll costs one RPC round-trip
+// (one eth_call) instead of one per field.
+const multicallRead = new ethers.Contract(MULTICALL3_ADDRESS, MULTICALL3_ABI, readProvider);
+
+// calls: [{ contract, method, args = [], allowFailure = false }]. Returns
+// decoded results in the same order. A call with allowFailure left false
+// that reverts makes the whole batch revert — same as a plain awaited call
+// throwing, so existing try/catch around a multicall() behaves like it did
+// around the Promise.all([...]) it replaced. Pass allowFailure: true for a
+// call that's expected to sometimes legitimately revert (e.g. currentForge()
+// before the pool has any bankroll) — its slot resolves to undefined instead
+// of failing the batch.
+async function multicall(calls) {
+  const requests = calls.map(({ contract, method, args = [], allowFailure = false }) => ({
+    target: contract.target,
+    allowFailure,
+    callData: contract.interface.encodeFunctionData(method, args),
+  }));
+  const results = await multicallRead.aggregate3.staticCall(requests);
+  return results.map((result, i) => {
+    const { contract, method, allowFailure = false } = calls[i];
+    if (!result.success) {
+      if (allowFailure) return undefined;
+      throw new Error(`multicall: ${method}() on ${contract.target} failed`);
+    }
+    const decoded = contract.interface.decodeFunctionResult(method, result.returnData);
+    return decoded.length === 1 ? decoded[0] : decoded;
+  });
+}
+
+// Batches the same set of per-id read calls (e.g. betAmt/betOdds/.../winnings)
+// across every id into a single multicall, instead of one round trip per id —
+// then regroups the flat results back into one array per id.
+async function multicallPerId(contract, ids, methods) {
+  if (ids.length === 0) return [];
+  const calls = ids.flatMap((id) => methods.map((method) => ({ contract, method, args: [id] })));
+  const flat = await multicall(calls);
+  const perId = [];
+  for (let i = 0; i < ids.length; i++) {
+    perId.push(flat.slice(i * methods.length, (i + 1) * methods.length));
+  }
+  return perId;
+}
+
 // --- Global state, filled in once the wallet connects ---
 let provider, signer, userAddress;
 let b0xGuessRead, b0xGuessWrite;
@@ -150,13 +233,15 @@ const LINK_DECIMALS = 18;
 // unfetched. null until the first load; 0n once there's nothing older left.
 let myBetsRemainingOffset = null;
 
-// The betID (bigint) the result modal is currently tracking, or null if
-// none is open. Only one bet's outcome is ever shown in the modal at a
-// time — if a second bet is placed while the first is still pending VRF,
-// the modal switches to tracking the new one; the first bet's result still
-// lands in "Recent Activity" / bet status text, it just won't reopen the modal.
+// The betID (bigint) the result modal and bet-status text are currently
+// tracking, or null if none is open. Only one bet's outcome is ever shown
+// there at a time — if a second bet is placed while the first is still
+// pending VRF, tracking switches to the new one; the first bet's result
+// still lands in "Recent Activity" and My Bets, it just won't touch the
+// modal or status text (which by then belong to the newer, still-pending bet).
 let activePendingBetId = null;
 let modalAutoCloseTimer = null;
+let pendingBetPollTimer = null;
 
 // Raw wallet B0x balance (wei), refreshed alongside the formatted display
 // text in refreshWalletInfo() — kept as a bigint so the Stake "Max" button
@@ -220,14 +305,17 @@ async function connectWallet() {
   signer = await provider.getSigner();
   userAddress = await signer.getAddress();
 
-  b0xGuessRead = new ethers.Contract(B0XGUESS_ADDRESS, B0XGUESS_ABI, provider);
+  // Reads go through readProvider (the user-configurable RPC), not the
+  // wallet's provider — only signing/sending (.connect(signer) below, and
+  // swapRouterWrite) needs the wallet at all.
+  b0xGuessRead = new ethers.Contract(B0XGUESS_ADDRESS, B0XGUESS_ABI, readProvider);
   b0xGuessWrite = b0xGuessRead.connect(signer);
-  stakedTokenRead = new ethers.Contract(STAKED_TOKEN_ADDRESS, ERC20_ABI, provider);
+  stakedTokenRead = new ethers.Contract(STAKED_TOKEN_ADDRESS, ERC20_ABI, readProvider);
   stakedTokenWrite = stakedTokenRead.connect(signer);
-  linkTokenRead = new ethers.Contract(LINK_TOKEN_ADDRESS, ERC20_ABI, provider);
+  linkTokenRead = new ethers.Contract(LINK_TOKEN_ADDRESS, ERC20_ABI, readProvider);
   linkTokenWrite = linkTokenRead.connect(signer);
   swapRouterWrite = new ethers.Contract(UNISWAP_SWAP_ROUTER02_ADDRESS, SWAP_ROUTER_ABI, signer);
-  quoterRead = new ethers.Contract(UNISWAP_QUOTER_V2_ADDRESS, QUOTER_ABI, provider);
+  quoterRead = new ethers.Contract(UNISWAP_QUOTER_V2_ADDRESS, QUOTER_ABI, readProvider);
 
   try {
     stakedDecimals = await stakedTokenRead.decimals();
@@ -253,75 +341,132 @@ async function connectWallet() {
 
 // --- Reading on-chain state into the UI ---
 
-async function refreshAll() {
-  await Promise.all([refreshPoolInfo(), refreshWalletInfo(), refreshBetEstimate(), refreshOwnerPanel()]);
-}
+// refreshAll() below is the "supermulticall": pool stats, wallet balances,
+// the owner panel, and the bet estimate are fetched together as ONE
+// multicall (they share several fields — e.g. AmountWeOWE_PER_POSITION2 and
+// FreeBetLink feed both pool stats and the bet estimate — so fetching them
+// as four separate multicalls, one per section, was itself still
+// redundant). Each section's rendering is split out into a plain apply*()
+// function (no I/O) so it can be called either from that one combined
+// result, or standalone (refreshWalletInfo/refreshBetEstimateInner below
+// still exist for the call sites that only need their own section — a
+// resolved-bet notification, or the debounced typing handler — without
+// pulling in everything else).
 
-async function refreshPoolInfo() {
-  const [price, poolRaw, unreleased, position, freeBet] = await Promise.all([
-    b0xGuessRead.getPriceOFB0xINUSD(),
-    stakedTokenRead.balanceOf(B0XGUESS_ADDRESS),
-    b0xGuessRead.unreleased(),
-    b0xGuessRead.AmountWeOWE_PER_POSITION2(),
-    b0xGuessRead.FreeBetLink(),
-  ]);
-
+function applyPoolInfo(price, poolRaw, unreleased, positionSize, freeBet) {
   const pool = poolRaw - unreleased;
-  const minBet = position / 50n; // matches the contract's require(amt >= AmountWeOWE_PER_POSITION2 / 50)
+  const minBet = positionSize / 50n; // matches the contract's require(amt >= AmountWeOWE_PER_POSITION2 / 50)
 
   els.statPrice.textContent = fmtUsd(price);
   els.statPool.textContent = fmt(pool, stakedDecimals) + " B0x";
   els.statMinbet.textContent = fmt(minBet, stakedDecimals) + " B0x";
   els.statFreebet.textContent = fmt(freeBet, LINK_DECIMALS, 6) + " LINK";
-  const subsidyThreshold = position * 20n;
+  const subsidyThreshold = positionSize * 20n;
   const subsidyThresholdDigits = Number(ethers.formatUnits(subsidyThreshold, stakedDecimals)) > 50 ? 0 : 4;
   els.statFreebetLabel.textContent = `LINK Subsidy if Over ${fmt(subsidyThreshold, stakedDecimals, subsidyThresholdDigits)} B0x Bet at once`;
 }
 
-async function refreshWalletInfo() {
-  const [b0xBalance, shares, totalShares] = await Promise.all([
-    stakedTokenRead.balanceOf(userAddress),
-    b0xGuessRead.balanceOf(userAddress),
-    b0xGuessRead.totalSupply(),
-  ]);
-
+// "shares" is an internal accounting ratio, not a token amount — totalSupply
+// starts at the literal integer 1 (B0xGuess.sol:519), not 1e18, so an early
+// staker's raw share count can be a tiny integer that rounds to "0.0000"
+// under normal 18-decimal formatting even though it correctly represents
+// real value (see Withdrawable value below, which reads out fine because
+// uOut() works in ratios, not absolute scale). Showing % of pool instead
+// sidesteps the scale mismatch entirely.
+function applyWalletInfo(b0xBalance, shares, totalShares, withdrawable) {
   userB0xBalanceWei = b0xBalance;
   const b0xBalanceText = fmt(b0xBalance, stakedDecimals) + " B0x";
   els.walletB0xBalance.textContent = b0xBalanceText;
   els.statB0xBalance.textContent = b0xBalanceText;
 
-  // "shares" is an internal accounting ratio, not a token amount —
-  // totalSupply starts at the literal integer 1 (B0xGuess.sol:519), not
-  // 1e18, so an early staker's raw share count can be a tiny integer that
-  // rounds to "0.0000" under normal 18-decimal formatting even though it
-  // correctly represents real value (see Withdrawable value below, which
-  // reads out fine because uOut() works in ratios, not absolute scale).
-  // Showing % of pool instead sidesteps the scale mismatch entirely.
   els.statShares.textContent =
     totalShares > 0n ? (Number((shares * 1000000n) / totalShares) / 10000).toFixed(4) + "%" : "0.0000%";
 
-  // Fetched separately: currentForge() -> uOut() divides by the contract's
-  // net staked bankroll (stakedToken balance minus unreleased), which is
-  // still 0 until someone calls stakeFor() for the first time — that
-  // division reverts, so isolate it instead of letting it blank out the
-  // balance/shares stats above too.
-  try {
-    const withdrawable = await b0xGuessRead.currentForge(userAddress);
-    els.statWithdrawable.textContent = fmt(withdrawable, stakedDecimals) + " B0x";
-  } catch {
-    els.statWithdrawable.textContent = fmt(0n, stakedDecimals) + " B0x";
-  }
+  els.statWithdrawable.textContent = fmt(withdrawable ?? 0n, stakedDecimals) + " B0x";
 }
 
-async function refreshOwnerPanel() {
-  const owner = await b0xGuessRead.owner();
+function applyOwnerPanel(owner, ready) {
   if (owner.toLowerCase() !== userAddress.toLowerCase()) {
     els.ownerPanel.classList.add("hidden");
     return;
   }
   els.ownerPanel.classList.remove("hidden");
-  const ready = await b0xGuessRead.shouldWeCall_SetAmountWeOwePerPosition();
   els.checkpointReady.textContent = ready ? "Yes" : "No";
+}
+
+async function refreshAll() {
+  const guess = Number(els.guessNumberInput.value);
+  const amountStr = els.betAmountInput.value;
+  let amtWei = null;
+  if (amountStr && Number(amountStr) > 0) {
+    try {
+      amtWei = ethers.parseUnits(amountStr, stakedDecimals);
+    } catch {
+      amtWei = null; // mid-edit invalid number — bet estimate below just falls back to the no-amount view
+    }
+  }
+  const hasAmount = amtWei !== null;
+
+  const calls = [
+    { contract: b0xGuessRead, method: "getPriceOFB0xINUSD" }, // 0
+    { contract: stakedTokenRead, method: "balanceOf", args: [B0XGUESS_ADDRESS] }, // 1 poolRaw
+    { contract: b0xGuessRead, method: "unreleased" }, // 2
+    { contract: b0xGuessRead, method: "AmountWeOWE_PER_POSITION2" }, // 3 positionSize
+    { contract: b0xGuessRead, method: "FreeBetLink" }, // 4 freeBetLink
+    { contract: stakedTokenRead, method: "balanceOf", args: [userAddress] }, // 5 b0xBalance
+    { contract: b0xGuessRead, method: "balanceOf", args: [userAddress] }, // 6 shares
+    { contract: b0xGuessRead, method: "totalSupply" }, // 7 totalShares
+    // currentForge() -> uOut() divides by the contract's net staked bankroll,
+    // which is still 0 until someone calls stakeFor() for the first time —
+    // that division reverts. allowFailure isolates just this slot.
+    { contract: b0xGuessRead, method: "currentForge", args: [userAddress], allowFailure: true }, // 8 withdrawable
+    { contract: b0xGuessRead, method: "owner" }, // 9
+    { contract: b0xGuessRead, method: "shouldWeCall_SetAmountWeOwePerPosition" }, // 10 checkpointReady
+    { contract: b0xGuessRead, method: "MaxINForGuess", args: [guess] }, // 11 maxBet
+    { contract: linkTokenRead, method: "balanceOf", args: [userAddress] }, // 12 userLinkBal
+    { contract: b0xGuessRead, method: "requestPrice" }, // 13 quoted
+    { contract: linkTokenRead, method: "balanceOf", args: [B0XGUESS_ADDRESS] }, // 14 contractLinkBal
+  ];
+  const payoutIndex = calls.length;
+  if (hasAmount) {
+    // allowFailure so a bad estOUTPUT (edge-case guess/amount combo) can't
+    // drag down the pool/wallet/owner data in the same batch.
+    calls.push({ contract: b0xGuessRead, method: "estOUTPUT", args: [amtWei, guess], allowFailure: true });
+  }
+
+  const results = await multicall(calls);
+  const [
+    price, poolRaw, unreleased, positionSize, freeBetLink,
+    b0xBalance, shares, totalShares, withdrawable,
+    owner, checkpointReady,
+    maxBet, userLinkBal, quoted, contractLinkBal,
+  ] = results;
+
+  applyPoolInfo(price, poolRaw, unreleased, positionSize, freeBetLink);
+  applyWalletInfo(b0xBalance, shares, totalShares, withdrawable);
+  applyOwnerPanel(owner, checkpointReady);
+
+  try {
+    const payout = hasAmount ? results[payoutIndex] : undefined;
+    applyBetEstimate({ guess, hasAmount, amtWei, maxBet, userLinkBal, positionSize, quoted, freeBetLink, contractLinkBal, payout });
+  } catch (err) {
+    // Same resilience the old standalone refreshBetEstimate() try/catch gave:
+    // a bad estimate shouldn't undo the pool/wallet/owner updates above.
+    console.warn("Bet estimate update failed:", err);
+  }
+}
+
+// Kept standalone for the call sites (a resolved-bet notification, the
+// pending-bet poll) that only need wallet balances refreshed, without
+// pulling in pool/owner/bet-estimate data too.
+async function refreshWalletInfo() {
+  const [b0xBalance, shares, totalShares, withdrawable] = await multicall([
+    { contract: stakedTokenRead, method: "balanceOf", args: [userAddress] },
+    { contract: b0xGuessRead, method: "balanceOf", args: [userAddress] },
+    { contract: b0xGuessRead, method: "totalSupply" },
+    { contract: b0xGuessRead, method: "currentForge", args: [userAddress], allowFailure: true },
+  ]);
+  applyWalletInfo(b0xBalance, shares, totalShares, withdrawable);
 }
 
 // --- Bet estimation (updates live as the user types) ---
@@ -345,32 +490,59 @@ function scheduleEstimate() {
 async function refreshBetEstimate() {
   if (!b0xGuessRead) return;
 
+  try {
+    await refreshBetEstimateInner();
+  } catch (err) {
+    // Transient RPC hiccups (public gateways in particular) shouldn't crash
+    // the input handler — just skip this refresh, the next keystroke/tick retries.
+    console.warn("refreshBetEstimate failed, will retry on next input:", err);
+  }
+}
+
+async function refreshBetEstimateInner() {
   const guess = Number(els.guessNumberInput.value);
-
   const amountStr = els.betAmountInput.value;
+  const hasAmount = amountStr && Number(amountStr) > 0;
 
-  // Neither of these depends on the bet amount, so they're always kept
-  // current — no need to type an amount first just to see your LINK
-  // balance or how big a bet the bankroll can cover at this guess.
-  const [maxBet, userLinkBal] = await Promise.all([
-    b0xGuessRead.MaxINForGuess(guess),
-    linkTokenRead.balanceOf(userAddress),
-  ]);
+  let amtWei = null;
+  if (hasAmount) {
+    try {
+      amtWei = ethers.parseUnits(amountStr, stakedDecimals);
+    } catch {
+      return;
+    }
+  }
+
+  // MaxINForGuess/LINK balance don't depend on the bet amount, so they're
+  // always kept current — no need to type an amount first just to see your
+  // LINK balance or how big a bet the bankroll can cover at this guess.
+  // estOUTPUT is only relevant (and only added to the batch) once an amount
+  // is typed — same call either way, one round trip either way.
+  const calls = [
+    { contract: b0xGuessRead, method: "MaxINForGuess", args: [guess] },
+    { contract: linkTokenRead, method: "balanceOf", args: [userAddress] },
+    { contract: b0xGuessRead, method: "AmountWeOWE_PER_POSITION2" },
+    { contract: b0xGuessRead, method: "requestPrice" },
+    { contract: b0xGuessRead, method: "FreeBetLink" },
+    { contract: linkTokenRead, method: "balanceOf", args: [B0XGUESS_ADDRESS] },
+  ];
+  if (hasAmount) calls.push({ contract: b0xGuessRead, method: "estOUTPUT", args: [amtWei, guess] });
+
+  const [maxBet, userLinkBal, positionSize, quoted, freeBetLink, contractLinkBal, payout] = await multicall(calls);
+
+  applyBetEstimate({ guess, hasAmount, amtWei, maxBet, userLinkBal, positionSize, quoted, freeBetLink, contractLinkBal, payout });
+}
+
+function applyBetEstimate({ guess, hasAmount, amtWei, maxBet, userLinkBal, positionSize, quoted, freeBetLink, contractLinkBal, payout }) {
   els.estMaxbet.textContent = fmt(maxBet, stakedDecimals) + " B0x";
   els.statLinkBalance.textContent = fmt(userLinkBal, LINK_DECIMALS, 6) + " LINK";
 
-  if (!amountStr || Number(amountStr) <= 0) {
+  if (!hasAmount) {
     els.estPayout.textContent = "—";
 
     // No bet amount yet — show the LINK cost, and check B0x/LINK sufficiency,
     // as if betting 1 B0x, so these stats/warnings don't just go blank.
     const fallbackAmtWei = ethers.parseUnits("1", stakedDecimals);
-    const [positionSize, quoted, freeBetLink, contractLinkBal] = await Promise.all([
-      b0xGuessRead.AmountWeOWE_PER_POSITION2(),
-      b0xGuessRead.requestPrice(),
-      b0xGuessRead.FreeBetLink(),
-      linkTokenRead.balanceOf(B0XGUESS_ADDRESS),
-    ]);
     const fallbackLinkPortion = estimateUserLinkPortion(fallbackAmtWei, positionSize, quoted, freeBetLink, contractLinkBal);
     const fallbackLinkCost = fallbackLinkPortion * LINK_COST_DISPLAY_MULTIPLIER;
     els.estLinkCost.textContent = fmt(fallbackLinkCost, LINK_DECIMALS, 6) + " LINK";
@@ -398,21 +570,6 @@ async function refreshBetEstimate() {
     }
     return;
   }
-
-  let amtWei;
-  try {
-    amtWei = ethers.parseUnits(amountStr, stakedDecimals);
-  } catch {
-    return;
-  }
-
-  const [payout, positionSize, quoted, freeBetLink, contractLinkBal] = await Promise.all([
-    b0xGuessRead.estOUTPUT(amtWei, guess),
-    b0xGuessRead.AmountWeOWE_PER_POSITION2(),
-    b0xGuessRead.requestPrice(),
-    b0xGuessRead.FreeBetLink(),
-    linkTokenRead.balanceOf(B0XGUESS_ADDRESS),
-  ]);
 
   els.estPayout.textContent = fmt(payout, stakedDecimals) + " B0x";
 
@@ -516,6 +673,7 @@ function closeBetModal() {
   els.modalOverlay.classList.add("hidden");
   resetModalTimer();
   activePendingBetId = null;
+  stopPendingBetPoll();
 }
 
 function showBetModalResult({ won, result, guess, amountWon }) {
@@ -539,6 +697,59 @@ function showBetModalResult({ won, result, guess, amountWon }) {
   modalAutoCloseTimer = setTimeout(closeBetModal, 10000);
 }
 
+// Safety net for the pending modal: it's normally resolved by the live
+// ShowAnswer listener in registerContractEvents(), but background tabs get
+// their timers throttled/paused by the browser, so a bet that resolves while
+// you're away (or during an RPC hiccup) can otherwise leave the modal stuck
+// on "Transmitting Guess…" forever. This checks the specific pending bet's
+// on-chain status directly, independent of whether any event was ever caught.
+async function checkPendingBet() {
+  if (activePendingBetId === null || !b0xGuessRead) return;
+  try {
+    const [guess, result, amountWon, resolvedThrough] = await multicall([
+      { contract: b0xGuessRead, method: "betOdds", args: [activePendingBetId] },
+      { contract: b0xGuessRead, method: "betResults", args: [activePendingBetId] },
+      { contract: b0xGuessRead, method: "winnings", args: [activePendingBetId] },
+      { contract: b0xGuessRead, method: "betid" },
+    ]);
+    if (activePendingBetId >= resolvedThrough) return; // still pending
+
+    const won = result < guess;
+    setStatus(
+      els.betStatus,
+      won
+        ? `You won! Rolled ${result}, payout ${fmt(amountWon, stakedDecimals)} B0x.`
+        : `You lost. Rolled ${result} (needed below ${guess}).`,
+      won ? "success" : "error"
+    );
+    showBetModalResult({ won, result, guess, amountWon });
+    stopPendingBetPoll();
+    refreshWalletInfo();
+    loadMyBets(true);
+  } catch (err) {
+    console.warn("Pending bet status check failed:", err);
+  }
+}
+
+function startPendingBetPoll() {
+  stopPendingBetPoll();
+  pendingBetPollTimer = setInterval(checkPendingBet, 5000);
+}
+
+function stopPendingBetPoll() {
+  if (pendingBetPollTimer) {
+    clearInterval(pendingBetPollTimer);
+    pendingBetPollTimer = null;
+  }
+}
+
+// Background tabs get setInterval throttled too, so on top of the 5s poll
+// above, re-check immediately the moment the tab becomes visible again
+// rather than waiting for the next tick.
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "visible") checkPendingBet();
+});
+
 els.modalClose.addEventListener("click", closeBetModal);
 
 // --- Placing a bet ---
@@ -551,11 +762,15 @@ async function placeBet() {
 
     await ensureAllowance(stakedTokenRead, stakedTokenWrite, userAddress, B0XGUESS_ADDRESS, amtWei, els.betStatus, "B0x");
 
-    const [positionSize, quoted, freeBetLink, contractLinkBal] = await Promise.all([
-      b0xGuessRead.AmountWeOWE_PER_POSITION2(),
-      b0xGuessRead.requestPrice(),
-      b0xGuessRead.FreeBetLink(),
-      linkTokenRead.balanceOf(B0XGUESS_ADDRESS),
+    // userLinkBal is only actually needed when userPortion > 0n, but fetching
+    // it unconditionally here means one round trip instead of a conditional
+    // second one.
+    const [positionSize, quoted, freeBetLink, contractLinkBal, userLinkBal] = await multicall([
+      { contract: b0xGuessRead, method: "AmountWeOWE_PER_POSITION2" },
+      { contract: b0xGuessRead, method: "requestPrice" },
+      { contract: b0xGuessRead, method: "FreeBetLink" },
+      { contract: linkTokenRead, method: "balanceOf", args: [B0XGUESS_ADDRESS] },
+      { contract: linkTokenRead, method: "balanceOf", args: [userAddress] },
     ]);
     const userPortion = estimateUserLinkPortion(amtWei, positionSize, quoted, freeBetLink, contractLinkBal);
     const bufferWei = ethers.parseUnits(String(LINK_APPROVAL_BUFFER), LINK_DECIMALS);
@@ -563,7 +778,6 @@ async function placeBet() {
 
     if (userPortion > 0n) {
       const displayLinkCost = userPortion * LINK_COST_DISPLAY_MULTIPLIER; // see LINK_COST_DISPLAY_MULTIPLIER comment
-      const userLinkBal = await linkTokenRead.balanceOf(userAddress);
       if (userLinkBal < displayLinkCost) {
         throw new Error(
           `This bet needs roughly ${fmt(displayLinkCost, LINK_DECIMALS, 6)} LINK in your wallet, but you only have ` +
@@ -602,6 +816,7 @@ async function placeBet() {
     if (placedBetId !== null) {
       openBetModal(guess);
       activePendingBetId = placedBetId;
+      startPendingBetPoll();
     }
     await refreshAll();
     await loadMyBets(true);
@@ -635,11 +850,11 @@ async function getSingleBetLinkCost() {
       ? ethers.parseUnits(amountStr, stakedDecimals)
       : ethers.parseUnits(String(MIN_BET_B0X), stakedDecimals);
 
-  const [positionSize, quoted, freeBetLink, contractLinkBal] = await Promise.all([
-    b0xGuessRead.AmountWeOWE_PER_POSITION2(),
-    b0xGuessRead.requestPrice(),
-    b0xGuessRead.FreeBetLink(),
-    linkTokenRead.balanceOf(B0XGUESS_ADDRESS),
+  const [positionSize, quoted, freeBetLink, contractLinkBal] = await multicall([
+    { contract: b0xGuessRead, method: "AmountWeOWE_PER_POSITION2" },
+    { contract: b0xGuessRead, method: "requestPrice" },
+    { contract: b0xGuessRead, method: "FreeBetLink" },
+    { contract: linkTokenRead, method: "balanceOf", args: [B0XGUESS_ADDRESS] },
   ]);
   const userLinkPortion = estimateUserLinkPortion(amtWei, positionSize, quoted, freeBetLink, contractLinkBal);
   return userLinkPortion * LINK_COST_DISPLAY_MULTIPLIER;
@@ -656,20 +871,23 @@ async function buyLink() {
     const targetOutput = singleBetCost * LINK_BUY_TARGET_MULTIPLIER;
 
     setStatus(els.buyLinkStatus, "Getting a quote from Uniswap...");
-    const [amountIn] = await quoterRead.quoteExactOutputSingle.staticCall([
-      WETH_ADDRESS,
-      LINK_TOKEN_ADDRESS,
-      targetOutput,
-      LINK_WETH_POOL_FEE,
-      0n,
+    // getEthBalance is Multicall3's own built-in (batches a native-balance
+    // read alongside a contract call, which eth_call can't otherwise do).
+    const [quoteResult, ethBalance] = await multicall([
+      {
+        contract: quoterRead,
+        method: "quoteExactOutputSingle",
+        args: [[WETH_ADDRESS, LINK_TOKEN_ADDRESS, targetOutput, LINK_WETH_POOL_FEE, 0n]],
+      },
+      { contract: multicallRead, method: "getEthBalance", args: [userAddress] },
     ]);
+    const [amountIn] = quoteResult;
 
     // Standard tight slippage tolerance around the target, not a wide
     // floor-to-ceiling band — see LINK_BUY_TARGET_MULTIPLIER comment.
     const slippageBps = BigInt(Math.round(LINK_BUY_SLIPPAGE_TOLERANCE * 10000));
     const amountOutMinimum = (targetOutput * (10000n - slippageBps)) / 10000n;
 
-    const ethBalance = await provider.getBalance(userAddress);
     const gasReserveWei = ethers.parseEther(ETH_GAS_RESERVE);
     if (ethBalance < amountIn + gasReserveWei) {
       throw new Error(
@@ -786,12 +1004,10 @@ async function runCheckpoint() {
 async function setFreeBet() {
   els.setFreeBetBtn.disabled = true;
   try {
-    const amtWei = ethers.parseUnits(els.freeBetInput.value, LINK_DECIMALS);
     setStatus(els.ownerStatus, "Updating rebate...");
-    const tx = await b0xGuessWrite.setFreeBetLink(amtWei);
+    const tx = await b0xGuessWrite.setFreeBetLink();
     await tx.wait();
     setStatus(els.ownerStatus, "Rebate updated.", "success");
-    els.freeBetInput.value = "";
     await refreshAll();
   } catch (err) {
     setStatus(els.ownerStatus, err.shortMessage || err.message || String(err), "error");
@@ -841,21 +1057,21 @@ function describeShowAnswer(usersGuess, result, amountWagered, guesser, amountWo
   };
 }
 
-function describeStaked(user, amount) {
-  return { text: `${shortAddr(user)} staked ${fmt(amount, stakedDecimals)} B0x` };
-}
+function handleShowAnswer(usersGuess, result, amountWagered, betID, guesser, amountWon) {
+  const { text, kind } = describeShowAnswer(usersGuess, result, amountWagered, guesser, amountWon);
+  addActivity(text, kind);
 
-function describeWithdrawn(user, amount) {
-  return { text: `${shortAddr(user)} withdrew ${fmt(amount, stakedDecimals)} shares` };
-}
+  if (guesser.toLowerCase() === userAddress.toLowerCase()) {
+    const won = result < usersGuess;
+    refreshWalletInfo();
+    loadMyBets(true);
 
-function registerContractEvents() {
-  b0xGuessRead.on("ShowAnswer", (usersGuess, result, amountWagered, betID, guesser, amountWon) => {
-    const { text, kind } = describeShowAnswer(usersGuess, result, amountWagered, guesser, amountWon);
-    addActivity(text, kind);
-
-    if (guesser.toLowerCase() === userAddress.toLowerCase()) {
-      const won = result < usersGuess;
+    // Only the bet the modal/status text is currently tracking should touch
+    // either — otherwise an older bet resolving after a newer one was placed
+    // overwrites "waiting on Chainlink VRF" with a stale result, making the
+    // newer (still genuinely pending) bet look stuck on the wrong outcome.
+    // The older bet's result is still visible in Recent Activity / My Bets.
+    if (activePendingBetId !== null && betID === activePendingBetId) {
       setStatus(
         els.betStatus,
         won
@@ -863,33 +1079,68 @@ function registerContractEvents() {
           : `You lost. Rolled ${result} (needed below ${usersGuess}).`,
         won ? "success" : "error"
       );
-      refreshWalletInfo();
-      loadMyBets(true);
-
-      if (activePendingBetId !== null && betID === activePendingBetId) {
-        showBetModalResult({ won, result, guess: usersGuess, amountWon });
-      }
+      showBetModalResult({ won, result, guess: usersGuess, amountWon });
     }
-  });
+  }
+}
 
-  b0xGuessRead.on("Staked", (user, amount) => {
-    addActivity(describeStaked(user, amount).text);
-  });
+// Polls for new ShowAnswer logs on an interval rather than
+// subscribing per-block (~2s on Base) or via contract.on(eventName, ...)
+// (which ethers v6 backs with eth_newFilter/eth_getFilterChanges against a
+// JSON-RPC provider — many public RPC gateways handle that poorly behind a
+// load balancer, a poll landing on a different backend node than the one
+// holding the filter, surfacing as sporadic 502s). This only feeds the
+// public "Recent Activity" feed — your own bet's result/My Bets/wallet
+// balance are refreshed independently by checkPendingBet()'s 5s poll — so
+// it doesn't need tight granularity, just periodic queryFilter over
+// whatever block range elapsed since the last tick.
+function registerContractEvents() {
+  let lastProcessedBlock = null;
+  let isPolling = false; // guards against a slow tick still running when the next interval fires
 
-  b0xGuessRead.on("Withdrawn", (user, amount) => {
-    addActivity(describeWithdrawn(user, amount).text);
-  });
+  async function pollNewBlocks() {
+    if (isPolling) return;
+    isPolling = true;
+    try {
+      const blockNumber = await readProvider.getBlockNumber();
+
+      if (lastProcessedBlock === null) {
+        // First tick after connecting — loadActivityHistory() already backfilled
+        // recent history, so just mark the starting point and wait for the next tick.
+        lastProcessedBlock = blockNumber;
+        return;
+      }
+      if (blockNumber <= lastProcessedBlock) return;
+
+      const fromBlock = lastProcessedBlock + 1;
+
+      const showAnswerLogs = await b0xGuessRead.queryFilter(b0xGuessRead.filters.ShowAnswer(), fromBlock, blockNumber);
+
+      // Only advance past fromBlock once it's actually been queried, so a
+      // transient RPC failure re-tries this same range (widened to include
+      // whatever new blocks arrived meanwhile) on the next tick instead of
+      // silently skipping it.
+      lastProcessedBlock = blockNumber;
+
+      for (const log of showAnswerLogs) handleShowAnswer(...log.args);
+    } catch (err) {
+      console.warn("Activity feed poll failed, will retry next tick:", err);
+    } finally {
+      isPolling = false;
+    }
+  }
+
+  pollNewBlocks();
+  setInterval(pollNewBlocks, ACTIVITY_POLL_INTERVAL_MS);
 }
 
 // Backfills the feed with recently-resolved bets so it isn't empty after
-// every page reload — the live listeners above only catch events from
-// this point on. Reads the contract's own per-bet mappings (betAmt,
-// betOdds, betee, betResults, winnings) indexed by bet ID, rather than
-// querying ShowAnswer event logs — plain view calls, so there's no
-// eth_getLogs block-range cap to worry about, and it reuses exactly the
-// same data the contract itself relies on for the FIFO betid/betidIN
-// queue. (Staked/Withdrawn have no equivalent per-index mapping to read,
-// so — unlike bets — they're only shown live going forward, not backfilled.)
+// every page reload — the live poller above only catches events from this
+// point on. Reads the contract's own per-bet mappings (betAmt, betOdds,
+// betee, betResults, winnings) indexed by bet ID, rather than querying
+// ShowAnswer event logs — plain view calls, so there's no eth_getLogs
+// block-range cap to worry about, and it reuses exactly the same data the
+// contract itself relies on for the FIFO betid/betidIN queue.
 async function loadActivityHistory() {
   try {
     const resolvedThrough = await b0xGuessRead.betid(); // bets [0, resolvedThrough) are settled
@@ -900,17 +1151,9 @@ async function loadActivityHistory() {
     const ids = [];
     for (let id = startId; id < resolvedThrough; id++) ids.push(id);
 
-    const bets = await Promise.all(
-      ids.map((id) =>
-        Promise.all([
-          b0xGuessRead.betAmt(id),
-          b0xGuessRead.betOdds(id),
-          b0xGuessRead.betee(id),
-          b0xGuessRead.betResults(id),
-          b0xGuessRead.winnings(id),
-        ])
-      )
-    );
+    // All ids' betAmt/betOdds/betee/betResults/winnings in one round trip,
+    // instead of 5 calls per id.
+    const bets = await multicallPerId(b0xGuessRead, ids, ["betAmt", "betOdds", "betee", "betResults", "winnings"]);
 
     for (const [amount, guess, guesser, result, amountWon] of bets) {
       const { text, kind } = describeShowAnswer(guess, result, amount, guesser, amountWon);
@@ -963,22 +1206,19 @@ async function loadMyBets(reset) {
     const offset = myBetsRemainingOffset > limit ? myBetsRemainingOffset - limit : 0n;
     const count = myBetsRemainingOffset - offset;
 
-    const [ids, resolvedThrough] = await Promise.all([
-      b0xGuessRead.getUserBetIds(userAddress, offset, count),
-      b0xGuessRead.betid(),
+    const [ids, resolvedThrough] = await multicall([
+      { contract: b0xGuessRead, method: "getUserBetIds", args: [userAddress, offset, count] },
+      { contract: b0xGuessRead, method: "betid" },
     ]);
 
-    const bets = await Promise.all(
-      [...ids].reverse().map(async (id) => {
-        const [amount, guess, result, amountWon] = await Promise.all([
-          b0xGuessRead.betAmt(id),
-          b0xGuessRead.betOdds(id),
-          b0xGuessRead.betResults(id),
-          b0xGuessRead.winnings(id),
-        ]);
-        return { id, amount, guess, result, amountWon, pending: id >= resolvedThrough };
-      })
-    );
+    // All ids' betAmt/betOdds/betResults/winnings in one round trip, instead
+    // of 4 calls per id.
+    const reversedIds = [...ids].reverse();
+    const perIdResults = await multicallPerId(b0xGuessRead, reversedIds, ["betAmt", "betOdds", "betResults", "winnings"]);
+    const bets = reversedIds.map((id, i) => {
+      const [amount, guess, result, amountWon] = perIdResults[i];
+      return { id, amount, guess, result, amountWon, pending: id >= resolvedThrough };
+    });
 
     for (const bet of bets) {
       els.myBetsList.appendChild(buildMyBetLi(bet));

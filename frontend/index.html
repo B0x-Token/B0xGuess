@@ -153,10 +153,6 @@
         <button id="checkpoint-btn">Run Checkpoint</button>
       </div>
 
-      <label>
-        New LINK rebate amount
-        <input type="number" id="free-bet-input" min="0" step="any" placeholder="0.0" />
-      </label>
       <button id="set-free-bet-btn">Set Rebate</button>
 
       <label>
@@ -180,6 +176,22 @@
     <div class="download-all-wrap">
       <button id="download-all-btn" class="secondary">Download All Website Files to Run Locally</button>
       <p id="download-all-status" class="status"></p>
+    </div>
+
+    <div class="rpc-settings">
+      <label>
+        Read RPC endpoint (contract reads only — your wallet still signs transactions)
+        <input type="text" id="rpc-url-input" placeholder="https://..." />
+      </label>
+      <p class="hint">
+        Need another option? <a href="https://chainlist.org/chain/8453" target="_blank" rel="noopener noreferrer">chainlist.org/chain/8453</a>
+        lists public Base RPC endpoints — pick one and paste its URL above.
+      </p>
+      <div class="rpc-settings-buttons">
+        <button id="rpc-url-save-btn" class="secondary">Save &amp; Reload</button>
+        <button id="rpc-url-reset-btn" class="secondary">Reset to Default</button>
+      </div>
+      <p id="rpc-url-status" class="status"></p>
     </div>
   </footer>
 

@@ -415,7 +415,7 @@ contract B0xGuess is VRFV2PlusWrapperConsumerBase {
 
     /// @notice Gas limit forwarded to the fulfillRandomWords callback
     /// @dev Tune to the actual gas used by fulfillRandomWords
-    uint32 public callbackGasLimit = 150000;
+    uint32 public callbackGasLimit = 200000;
 
     /// @notice Number of block confirmations the VRF wrapper waits before fulfilling a request
     /// @dev Network minimum is 0, maximum is 200
@@ -430,7 +430,7 @@ contract B0xGuess is VRFV2PlusWrapperConsumerBase {
     uint256 public FreeBetLink = 0.001 * 10 ** 18;
 
     /// @notice Hard minimum value setFreeBetLink() will allow FreeBetLink to be set to
-    uint256 public constant FREE_BET_LINK_FLOOR = 0.1 * 10 ** 18;
+    uint256 public constant FREE_BET_LINK_FLOOR = 0.00001 * 10 ** 18;
 
     /// @notice Minimum Forge (stakedToken) bet size required to qualify for the LINK rebate
     uint256 public constant REBATE_MIN_BET = 50 * 10 ** 18;
@@ -849,11 +849,12 @@ contract B0xGuess is VRFV2PlusWrapperConsumerBase {
     }
 
     /// @notice Updates the LINK rebate amount given to qualifying bets
-    /// @dev Owner-gated; cannot be set below FREE_BET_LINK_FLOOR
-    /// @param newAmount The new FreeBetLink value, in LINK wei (18 decimals)
-    function setFreeBetLink(uint256 newAmount) external onlyOwner {
-        require(newAmount >= FREE_BET_LINK_FLOOR, "FreeBetLink cannot go below floor");
-        FreeBetLink = newAmount;
+    /// @dev Owner-gated; Sets it to 450* requestPrice()
+    function setFreeBetLink() external onlyOwner {
+          // Pull a quote, request, then refund whatever we didn't actually spend.
+        uint256 quoted = requestPrice();
+        quoted = quoted * 450;
+        FreeBetLink = quoted;
     }
 
     /// @notice Places a guess/bet and requests VRF randomness to resolve it

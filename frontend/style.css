@@ -392,6 +392,27 @@ footer a { color: var(--accent); }
 
 .download-all-wrap .status { margin-top: 0.4rem; }
 
+.rpc-settings {
+  margin-top: 1rem;
+  padding-top: 1rem;
+  border-top: 1px solid var(--border);
+  max-width: 32rem;
+  margin-left: auto;
+  margin-right: auto;
+  text-align: left;
+}
+
+.rpc-settings label { text-align: left; }
+
+.rpc-settings-buttons {
+  display: flex;
+  gap: 0.5rem;
+  justify-content: center;
+  margin-top: 0.5rem;
+}
+
+.rpc-settings .status { margin-top: 0.4rem; text-align: center; }
+
 .hidden { display: none !important; }
 
 /* ---------------------------------------------------------------------- */
