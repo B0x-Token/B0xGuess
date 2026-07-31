@@ -39,7 +39,7 @@ const MULTICALL3_ABI = [
 ];
 
 // --- Deployed addresses (Base mainnet) ---
-const B0XGUESS_ADDRESS = "0x4FD35723A63388Afb39b9E88cdcF5278e6aD56C2";
+const B0XGUESS_ADDRESS = "0xCbA11d323558cfb25393493DBDDa51295372A41b";
 const STAKED_TOKEN_ADDRESS = "0x6B19E31C1813cD00b0d47d798601414b79A3e8AD"; // B0x
 const LINK_TOKEN_ADDRESS = "0x88Fb150BDc53A65fe94Dea0c9BA0a6dAf8C6e196"; // hardcoded in B0xGuess.sol's constructor
 
@@ -81,7 +81,7 @@ const B0XGUESS_ABI = [
   "function withdraw(uint256 amount, uint256 maxLoss)",
   "function perfectWithdraw(uint256 maxLoss)",
   "function setAmountWeOwePerPosition()",
-  "function setFreeBetLink()",
+  "function setFreeBetLink(uint256 guess, uint256 amt) returns (uint256 requestId)",
   "function transferOwnership(address newOwner)",
 
   // events

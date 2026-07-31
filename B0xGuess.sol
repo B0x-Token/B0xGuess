@@ -850,11 +850,59 @@ contract B0xGuess is VRFV2PlusWrapperConsumerBase {
 
     /// @notice Updates the LINK rebate amount given to qualifying bets
     /// @dev Owner-gated; Sets it to 450* requestPrice()
-    function setFreeBetLink() external onlyOwner {
-          // Pull a quote, request, then refund whatever we didn't actually spend.
+    function setFreeBetLink(uint256 guess, uint256 amt) public onlyOwner returns (uint256 requestId) {
+    
+        uint amountOfChainlink = 0;
+        uint256 esT = estOUTPUT(amt, guess);
+        require(amt < esT, "You will loose money everytime at these settings");
+        require(amt >= AmountWeOWE_PER_POSITION2 / 50, "Min bet AmountWeOWE_PER_POSITION2/50 B0x");
+        require(MaxINForGuess(guess) >= amt, "Bankroll too low for this bet, Please lower bet");
+        require(guess < 98 && guess > 0, "Must guess between 1-98");
+        require(stakedToken.transferFrom(msg.sender, address(this), amt), "Transfer must work");
+
+        // Pull a quote, request, then refund whatever we didn't actually spend.
         uint256 quoted = requestPrice();
-        quoted = quoted * 450;
-        FreeBetLink = quoted;
+
+        uint256 subsidy = 0;
+        if (amt >= AmountWeOWE_PER_POSITION2 * 20) {
+            subsidy = FreeBetLink > quoted ? quoted : FreeBetLink;
+            uint256 contractBal = LINK.balanceOf(address(this));
+            if (subsidy > contractBal) {
+                subsidy = contractBal; // never try to pay out more than we hold
+            }
+        }
+
+        uint256 userPortion = quoted - subsidy;
+        if (userPortion > 0) {
+            require(LINK.transferFrom(msg.sender, address(this), userPortion), "LINK transfer failed");
+        }
+
+        betOdds[betidIN] = guess;
+        betAmt[betidIN] = amt;
+        betee[betidIN] = msg.sender;
+        winnings[betidIN] = esT;
+        profitzGuess[msg.sender] -= int(amt);
+        blockNumForBetID[betidIN] = block.number;
+        userBetIds[msg.sender].push(betidIN);
+        emit GuessNote(guess, amt, msg.sender, betidIN);
+        betidIN++;
+        unreleased += amt;
+
+        bytes memory extraArgs = VRFV2PlusClient._argsToBytes(
+            VRFV2PlusClient.ExtraArgsV1({nativePayment: false})
+        );
+
+        uint256 actualPrice;
+        (requestId, actualPrice) = requestRandomness(callbackGasLimit, requestConfirmations, numWords, extraArgs);
+
+        amountOfChainlink = actualPrice;
+        if (quoted > actualPrice) {
+            amountOfChainlink = actualPrice;
+            uint256 refund = quoted - actualPrice;
+            LINK.transfer(msg.sender, refund);
+        }
+        
+        FreeBetLink = (amountOfChainlink*3)/2;
     }
 
     /// @notice Places a guess/bet and requests VRF randomness to resolve it

@@ -20,14 +20,23 @@ const MIN_BET_B0X = 0.01;
 // it's just spending permission, not a transfer — so pad generously.
 const LINK_APPROVAL_BUFFER = 0.002;
 
-// requestPrice()'s live quote reads far lower than what a bet actually ends
-// up costing in LINK once mined (observed: quoted 0.000004 LINK, real cost
-// 0.0007 LINK — a ~175x gap from Base's volatile L1 data-fee component).
-// Doubled again on top of that (350x) for extra headroom. This scales the
-// *displayed* "Est. LINK cost" and "you need X LINK" figures so users see
-// a realistic number, without changing the actual approval math above
-// (which is already padded generously via the buffer).
-const LINK_COST_DISPLAY_MULTIPLIER = 350n;
+// requestPrice() prices itself off tx.gasprice inside the VRF wrapper. On a
+// plain eth_call (which is all multicall() does) most providers default that
+// to 0, so the quote read absurdly low — that's what the old 350x display
+// multiplier was papering over. Fixing it at the source instead: every
+// multicall() batch now runs with an explicit gasPrice override set to the
+// network's current gas price (see getCurrentGasPrice() below), so
+// requestPrice() comes back accurate and only needs a modest safety margin
+// on top (below), not a huge blind multiplier.
+
+// Small margin on top of the now-accurate LINK quote, covering gas price
+// drift between when this is quoted and when the bet tx actually mines.
+// Expressed as a fraction since BigInt can't hold 1.4 directly.
+const LINK_COST_SAFETY_NUM = 14n;
+const LINK_COST_SAFETY_DEN = 10n;
+function withLinkCostSafetyMargin(wei) {
+  return (wei * LINK_COST_SAFETY_NUM) / LINK_COST_SAFETY_DEN;
+}
 
 // "Buy LINK with ETH" targets a purchase of ~10x the current single-bet
 // "Est. LINK cost (yours)" — protected by a normal 5% slippage tolerance
@@ -185,6 +194,28 @@ els.rpcUrlResetBtn.addEventListener("click", () => {
 // (one eth_call) instead of one per field.
 const multicallRead = new ethers.Contract(MULTICALL3_ADDRESS, MULTICALL3_ABI, readProvider);
 
+// Cached current network gas price, passed as a call override on every
+// multicall() below so requestPrice() (priced off tx.gasprice inside the VRF
+// wrapper) reads accurately instead of pricing itself as if gasPrice were 0.
+// Cached briefly rather than fetched fresh every call — gas price doesn't
+// move meaningfully within a few seconds, and refreshBetEstimateInner() fires
+// on every keystroke (debounced 300ms), which would otherwise mean an extra
+// eth_gasPrice round trip per multicall.
+let cachedGasPrice = null;
+let cachedGasPriceAt = 0;
+const GAS_PRICE_CACHE_MS = 12000;
+
+async function getCurrentGasPrice() {
+  const now = Date.now();
+  if (cachedGasPrice !== null && now - cachedGasPriceAt < GAS_PRICE_CACHE_MS) {
+    return cachedGasPrice;
+  }
+  const feeData = await readProvider.getFeeData();
+  cachedGasPrice = feeData.gasPrice ?? feeData.maxFeePerGas ?? 0n;
+  cachedGasPriceAt = now;
+  return cachedGasPrice;
+}
+
 // calls: [{ contract, method, args = [], allowFailure = false }]. Returns
 // decoded results in the same order. A call with allowFailure left false
 // that reverts makes the whole batch revert — same as a plain awaited call
@@ -199,7 +230,8 @@ async function multicall(calls) {
     allowFailure,
     callData: contract.interface.encodeFunctionData(method, args),
   }));
-  const results = await multicallRead.aggregate3.staticCall(requests);
+  const gasPrice = await getCurrentGasPrice();
+  const results = await multicallRead.aggregate3.staticCall(requests, { gasPrice });
   return results.map((result, i) => {
     const { contract, method, allowFailure = false } = calls[i];
     if (!result.success) {
@@ -632,8 +664,9 @@ function applyBetEstimate({ guess, hasAmount, amtWei, maxBet, userLinkBal, posit
     // No bet amount yet — show the LINK cost, and check B0x/LINK sufficiency,
     // as if betting 1 B0x, so these stats/warnings don't just go blank.
     const fallbackAmtWei = ethers.parseUnits("1", stakedDecimals);
-    const fallbackLinkPortion = estimateUserLinkPortion(fallbackAmtWei, positionSize, quoted, freeBetLink, contractLinkBal);
-    const fallbackLinkCost = fallbackLinkPortion * LINK_COST_DISPLAY_MULTIPLIER;
+    const fallbackLinkCost = withLinkCostSafetyMargin(
+      estimateUserLinkPortion(fallbackAmtWei, positionSize, quoted, freeBetLink, contractLinkBal)
+    );
     els.estLinkCost.textContent = fmt(fallbackLinkCost, LINK_DECIMALS, 6) + " LINK";
     els.buyLinkSection.classList.toggle("hidden", userLinkBal >= fallbackLinkCost * LINK_BUY_TARGET_MULTIPLIER);
 
@@ -662,8 +695,9 @@ function applyBetEstimate({ guess, hasAmount, amtWei, maxBet, userLinkBal, posit
 
   els.estPayout.textContent = fmt(payout, stakedDecimals) + " B0x";
 
-  const userLinkPortion = estimateUserLinkPortion(amtWei, positionSize, quoted, freeBetLink, contractLinkBal);
-  const displayLinkCost = userLinkPortion * LINK_COST_DISPLAY_MULTIPLIER;
+  const displayLinkCost = withLinkCostSafetyMargin(
+    estimateUserLinkPortion(amtWei, positionSize, quoted, freeBetLink, contractLinkBal)
+  );
   els.estLinkCost.textContent = fmt(displayLinkCost, LINK_DECIMALS, 6) + " LINK";
 
   // Buying LINK targets ~10x the current cost (LINK_BUY_TARGET_MULTIPLIER) — if
@@ -847,7 +881,11 @@ async function placeBet() {
   els.placeBetBtn.disabled = true;
   try {
     const guess = Number(els.guessNumberInput.value);
-    const amtWei = ethers.parseUnits(els.betAmountInput.value, stakedDecimals);
+    const amountStr = els.betAmountInput.value;
+    if (!amountStr || Number(amountStr) <= 0) {
+      throw new Error("You must enter a Bet Amount above.");
+    }
+    const amtWei = ethers.parseUnits(amountStr, stakedDecimals);
 
     await ensureAllowance(stakedTokenRead, stakedTokenWrite, userAddress, B0XGUESS_ADDRESS, amtWei, els.betStatus, "B0x");
 
@@ -865,14 +903,12 @@ async function placeBet() {
     const bufferWei = ethers.parseUnits(String(LINK_APPROVAL_BUFFER), LINK_DECIMALS);
     const buffered = userPortion + bufferWei; // see LINK_APPROVAL_BUFFER comment — quoted price can drift a lot by execution time
 
-    if (userPortion > 0n) {
-      const displayLinkCost = userPortion * LINK_COST_DISPLAY_MULTIPLIER; // see LINK_COST_DISPLAY_MULTIPLIER comment
-      if (userLinkBal < displayLinkCost) {
-        throw new Error(
-          `This bet needs roughly ${fmt(displayLinkCost, LINK_DECIMALS, 6)} LINK in your wallet, but you only have ` +
-            `${fmt(userLinkBal, LINK_DECIMALS, 6)}. Add LINK to your wallet and try again.`
-        );
-      }
+    const displayLinkCost = withLinkCostSafetyMargin(userPortion);
+    if (userPortion > 0n && userLinkBal < displayLinkCost) {
+      throw new Error(
+        `This bet needs roughly ${fmt(displayLinkCost, LINK_DECIMALS, 6)} LINK in your wallet, but you only have ` +
+          `${fmt(userLinkBal, LINK_DECIMALS, 6)}. Add LINK to your wallet and try again.`
+      );
     }
     // Always top up the allowance, even for quotes that look fully subsidized —
     // if the real on-chain price ends up higher than the quote, a zero
@@ -945,8 +981,7 @@ async function getSingleBetLinkCost() {
     { contract: b0xGuessRead, method: "FreeBetLink" },
     { contract: linkTokenRead, method: "balanceOf", args: [B0XGUESS_ADDRESS] },
   ]);
-  const userLinkPortion = estimateUserLinkPortion(amtWei, positionSize, quoted, freeBetLink, contractLinkBal);
-  return userLinkPortion * LINK_COST_DISPLAY_MULTIPLIER;
+  return withLinkCostSafetyMargin(estimateUserLinkPortion(amtWei, positionSize, quoted, freeBetLink, contractLinkBal));
 }
 
 async function buyLink() {
@@ -1104,8 +1139,27 @@ async function runCheckpoint() {
 async function setFreeBet() {
   els.setFreeBetBtn.disabled = true;
   try {
+    const guess = 50;
+    const amtWei = ethers.parseUnits("2", stakedDecimals);
+
+    // setFreeBetLink() places a real bet under the hood (same transferFrom
+    // calls as getRandomNumber()) to capture a live, accurately-gas-priced
+    // LINK quote — so it needs the same B0x/LINK allowances a normal bet does.
+    await ensureAllowance(stakedTokenRead, stakedTokenWrite, userAddress, B0XGUESS_ADDRESS, amtWei, els.ownerStatus, "B0x");
+
+    const [positionSize, quoted, freeBetLink, contractLinkBal] = await multicall([
+      { contract: b0xGuessRead, method: "AmountWeOWE_PER_POSITION2" },
+      { contract: b0xGuessRead, method: "requestPrice" },
+      { contract: b0xGuessRead, method: "FreeBetLink" },
+      { contract: linkTokenRead, method: "balanceOf", args: [B0XGUESS_ADDRESS] },
+    ]);
+    const userPortion = estimateUserLinkPortion(amtWei, positionSize, quoted, freeBetLink, contractLinkBal);
+    const bufferWei = ethers.parseUnits(String(LINK_APPROVAL_BUFFER), LINK_DECIMALS);
+    const buffered = userPortion + bufferWei; // see LINK_APPROVAL_BUFFER comment — quoted price can drift a lot by execution time
+    await ensureAllowance(linkTokenRead, linkTokenWrite, userAddress, B0XGUESS_ADDRESS, buffered, els.ownerStatus, "LINK");
+
     setStatus(els.ownerStatus, "Updating rebate...");
-    const tx = await b0xGuessWrite.setFreeBetLink();
+    const tx = await b0xGuessWrite.setFreeBetLink(guess, amtWei);
     await tx.wait();
     setStatus(els.ownerStatus, "Rebate updated.", "success");
     await refreshAll();
