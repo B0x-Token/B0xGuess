@@ -277,18 +277,40 @@ function setStatus(el, message, kind) {
 
 // --- Connecting & network handling ---
 
+// Some mobile wallet in-app browsers (seen with Rabby Mobile) never resolve
+// or reject wallet_switchEthereumChain/wallet_addEthereumChain — they just
+// hang. A hung promise can't be caught, so every wallet RPC call here is
+// raced against a timeout to guarantee connectWallet() eventually surfaces
+// a visible error instead of leaving the UI stuck with no feedback.
+function withTimeout(promise, ms, label) {
+  return Promise.race([
+    promise,
+    new Promise((_, reject) =>
+      setTimeout(() => reject(new Error(`${label} timed out after ${ms / 1000}s — your wallet may not have responded. Check for a pending request inside the wallet app.`)), ms)
+    ),
+  ]);
+}
+
 async function ensureBaseNetwork() {
   try {
-    await window.ethereum.request({
-      method: "wallet_switchEthereumChain",
-      params: [{ chainId: BASE_CHAIN_ID_HEX }],
-    });
+    await withTimeout(
+      window.ethereum.request({
+        method: "wallet_switchEthereumChain",
+        params: [{ chainId: BASE_CHAIN_ID_HEX }],
+      }),
+      15000,
+      "Switching to Base network"
+    );
   } catch (switchError) {
     if (switchError.code === 4902) {
-      await window.ethereum.request({
-        method: "wallet_addEthereumChain",
-        params: [BASE_NETWORK_PARAMS],
-      });
+      await withTimeout(
+        window.ethereum.request({
+          method: "wallet_addEthereumChain",
+          params: [BASE_NETWORK_PARAMS],
+        }),
+        15000,
+        "Adding Base network"
+      );
     } else {
       throw switchError;
     }
@@ -303,10 +325,20 @@ async function connectWallet() {
 
   registerWalletEvents(); // safety net — see registerWalletEvents() for why this can't just run once at script load
 
+  els.connectHint.classList.remove("error");
+  els.connectHint.textContent = "Requesting account access — check your wallet app...";
+
   try {
-    await window.ethereum.request({ method: "eth_requestAccounts" });
+    await withTimeout(
+      window.ethereum.request({ method: "eth_requestAccounts" }),
+      30000,
+      "Requesting account access"
+    );
+
+    els.connectHint.textContent = "Switching to Base network — check your wallet app...";
     await ensureBaseNetwork();
 
+    els.connectHint.textContent = "Finishing connection...";
     provider = new ethers.BrowserProvider(window.ethereum);
     signer = await provider.getSigner();
     userAddress = await signer.getAddress();
