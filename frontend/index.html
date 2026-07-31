@@ -10,9 +10,11 @@
 
   <header class="topbar">
     <h1>B0x Guess</h1>
+    <a class="topbar-link" href="https://dev.bzerox.org/#how-to-b0x-guess" target="_blank" rel="noopener noreferrer">How to Guides</a>
     <div class="wallet-box">
       <span id="network-badge" class="badge hidden">Base</span>
       <span id="wallet-address" class="hidden"></span>
+      <span id="wallet-b0x-balance" class="badge hidden"></span>
       <button id="connect-btn">Connect Wallet</button>
     </div>
   </header>
@@ -25,11 +27,14 @@
       <div class="stat-grid">
         <div class="stat"><span class="label">B0x price (USD)</span><span id="stat-price">—</span></div>
         <div class="stat"><span class="label">Pool balance</span><span id="stat-pool">—</span></div>
-        <div class="stat"><span class="label">Position size</span><span id="stat-position">—</span></div>
         <div class="stat"><span class="label">Min bet</span><span id="stat-minbet">—</span></div>
-        <div class="stat"><span class="label">VRF request price</span><span id="stat-vrfprice">—</span></div>
-        <div class="stat"><span class="label">LINK rebate</span><span id="stat-freebet">—</span></div>
+        <div class="stat"><span class="label" id="stat-freebet-label">LINK Subsidy</span><span id="stat-freebet">—</span></div>
       </div>
+    </section>
+
+    <!-- Buy B0x -->
+    <section class="card buy-b0x-banner">
+      <a class="link-button buy-b0x-button" href="https://bzerox.org/?swap" target="_blank" rel="noopener noreferrer">Buy B0x</a>
     </section>
 
     <!-- Play -->
@@ -45,6 +50,7 @@
           <input type="number" id="guess-number-input" min="1" max="97" step="1" value="50" />
         </div>
       </label>
+      <p class="hint">Win chance: <strong id="win-chance-value">50%</strong> (<span id="win-chance-fraction">50 out of 100</span>)</p>
 
       <label>
         Bet amount (B0x)
@@ -52,16 +58,33 @@
       </label>
 
       <div class="stat-grid">
+        <div class="stat"><span class="label">Your B0x balance</span><span id="stat-b0x-balance">—</span></div>
         <div class="stat"><span class="label">Potential payout</span><span id="est-payout">—</span></div>
         <div class="stat"><span class="label">Max bet at this guess</span><span id="est-maxbet">—</span></div>
         <div class="stat"><span class="label">Est. LINK cost (yours)</span><span id="est-link-cost">—</span></div>
         <div class="stat"><span class="label">Your LINK balance</span><span id="stat-link-balance">—</span></div>
       </div>
 
+      <div id="buy-link-section">
+        <button id="buy-link-btn" class="secondary">Buy LINK with ETH (Uniswap)</button>
+        <p class="hint">Swaps ETH for LINK on the LINK/WETH 0.3% Uniswap v3 pool, targeting about 3x the current
+          Est. LINK cost (enough to cover a couple of bets) with a 5% slippage tolerance.</p>
+        <p id="buy-link-status" class="status"></p>
+      </div>
+
       <p id="bet-warning" class="warning hidden"></p>
 
       <button id="place-bet-btn">Place Bet</button>
       <p id="bet-status" class="status"></p>
+    </section>
+
+    <!-- My Bets — reads straight from the contract's per-address bet index,
+         no event-log scanning needed -->
+    <section class="card">
+      <h2>My Bets</h2>
+      <ul id="my-bets-list" class="activity-feed"></ul>
+      <p id="my-bets-status" class="status"></p>
+      <button id="my-bets-load-more-btn" class="secondary hidden">Load Older Bets</button>
     </section>
 
     <!-- Stake / become the house -->
@@ -72,15 +95,17 @@
 
       <label>
         Amount to stake (B0x)
-        <input type="number" id="stake-amount-input" min="0" step="any" placeholder="0.0" />
+        <div class="amount-row">
+          <input type="number" id="stake-amount-input" min="0" step="any" placeholder="0.0" />
+          <button type="button" id="stake-max-btn" class="secondary">Max</button>
+        </div>
       </label>
       <button id="stake-btn">Stake</button>
       <p id="stake-status" class="status"></p>
 
       <div class="stat-grid">
-        <div class="stat"><span class="label">Your stake shares</span><span id="stat-shares">—</span></div>
+        <div class="stat"><span class="label">Your pool ownership</span><span id="stat-shares">—</span></div>
         <div class="stat"><span class="label">Withdrawable value</span><span id="stat-withdrawable">—</span></div>
-        <div class="stat"><span class="label">Lifetime profit</span><span id="stat-profit">—</span></div>
       </div>
 
       <label>
@@ -140,7 +165,7 @@
   <p id="connect-hint">Connect a wallet on the Base network to play.</p>
 
   <footer>
-    <a href="https://basescan.org/address/0xE55B36c9Be6Fca80D78c36907F15Fd03b33a42C0" target="_blank" rel="noopener">
+    <a id="contract-link" href="#" target="_blank" rel="noopener">
       View contract on BaseScan
     </a>
   </footer>

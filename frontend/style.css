@@ -33,6 +33,9 @@ body {
 
 .wallet-box { display: flex; align-items: center; gap: 0.75rem; }
 
+.topbar-link { color: var(--accent); text-decoration: none; font-weight: 600; font-size: 0.95rem; }
+.topbar-link:hover { color: var(--accent-dark); text-decoration: underline; }
+
 .badge {
   background: var(--accent-dark);
   color: white;
@@ -87,6 +90,10 @@ input[type="range"] { width: 100%; accent-color: var(--accent); }
 .guess-row { display: flex; align-items: center; gap: 0.75rem; }
 .guess-row input[type="number"] { width: 4.5rem; flex: none; text-align: center; }
 
+.amount-row { display: flex; align-items: center; gap: 0.5rem; }
+.amount-row input[type="number"] { flex: 1; }
+.amount-row button { margin-top: 0; flex: none; padding: 0.5rem 0.9rem; }
+
 button {
   margin-top: 0.75rem;
   padding: 0.55rem 1.1rem;
@@ -100,6 +107,43 @@ button {
 
 button:hover { background: var(--accent-dark); color: white; }
 button:disabled { opacity: 0.5; cursor: not-allowed; }
+
+button.secondary {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--text);
+}
+button.secondary:hover { background: var(--border); color: var(--text); }
+
+.link-button {
+  display: inline-block;
+  margin-top: 0.75rem;
+  padding: 0.55rem 1.1rem;
+  background: var(--accent);
+  border: none;
+  border-radius: 8px;
+  color: #0a1015;
+  font-weight: 600;
+  text-decoration: none;
+  cursor: pointer;
+}
+.link-button:hover { background: var(--accent-dark); color: white; }
+
+.buy-b0x-banner { display: flex; justify-content: center; }
+.buy-b0x-button { font-size: 1.1rem; padding: 0.7rem 2rem; margin-top: 0; }
+
+button.needs-link {
+  background: var(--warn);
+  border: 1px solid var(--warn);
+  color: #201400;
+  animation: needs-link-pulse 1.6s ease-in-out infinite;
+}
+button.needs-link:hover { background: var(--warn); color: #201400; }
+
+@keyframes needs-link-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(240, 168, 79, 0.55); }
+  50% { box-shadow: 0 0 0 6px rgba(240, 168, 79, 0); }
+}
 
 .stat-grid {
   display: grid;
@@ -124,6 +168,9 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
   border-radius: 6px;
   font-size: 0.85rem;
 }
+
+.warning a { color: var(--accent); font-weight: 600; }
+.warning a:visited { color: var(--accent); }
 
 .activity-feed {
   list-style: none;
