@@ -130,6 +130,11 @@ h1, h2, h3 { font-family: var(--font-display); letter-spacing: 0.03em; }
   box-shadow: 0 0 12px rgba(0, 229, 255, 0.35);
 }
 
+.badge.warn {
+  background: linear-gradient(90deg, var(--danger), var(--warn));
+  box-shadow: 0 0 12px rgba(255, 63, 107, 0.35);
+}
+
 #wallet-address {
   font-family: monospace;
   color: var(--text-dim);

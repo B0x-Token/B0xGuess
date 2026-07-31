@@ -317,6 +317,31 @@ async function ensureBaseNetwork() {
   }
 }
 
+// (Re)binds whichever account the wallet currently has selected: fetches a
+// fresh signer, rebuilds the write-side contract instances against it, and
+// reloads every piece of UI state that's specific to an address (displayed
+// address, "My Bets", balances/pool/owner stats). Called once during the
+// initial connect, and again — in place, no page reload — every time
+// accountsChanged reports a different address.
+async function bindAccount() {
+  signer = await provider.getSigner();
+  userAddress = await signer.getAddress();
+
+  b0xGuessWrite = b0xGuessRead.connect(signer);
+  stakedTokenWrite = stakedTokenRead.connect(signer);
+  linkTokenWrite = linkTokenRead.connect(signer);
+  swapRouterWrite = new ethers.Contract(UNISWAP_SWAP_ROUTER02_ADDRESS, SWAP_ROUTER_ABI, signer);
+
+  els.walletAddress.textContent = shortAddr(userAddress);
+
+  // Any pending-bet tracking/poll and "My Bets" pagination cursor belonged
+  // to whichever address was connected before — stale the moment the
+  // account changes.
+  closeBetModal();
+  await loadMyBets(true);
+  await refreshAll();
+}
+
 async function connectWallet() {
   if (!window.ethereum) {
     alert("No wallet found. Please install MetaMask or another Base-compatible wallet.");
@@ -329,14 +354,14 @@ async function connectWallet() {
   els.connectHint.textContent = "Requesting account access — check your wallet app...";
 
   // ensureBaseNetwork() below causes the wallet to emit its own chainChanged
-  // event for the switch we just asked for. Without this flag, the
-  // chainChanged listener in registerWalletEvents() reads that as an
-  // external network change and reloads the page mid-connect — which then
-  // re-triggers the auto-reconnect on load, re-runs ensureBaseNetwork(), and
-  // loops forever (seen on Rabby Mobile). Suppress reloads for the duration
-  // of our own connect flow; re-enable them once we're actually connected so
-  // a real, later network/account switch still reloads as intended.
-  suppressWalletReload = true;
+  // event for the switch we just asked for, and eth_requestAccounts can
+  // similarly fire accountsChanged the first time a site is authorized.
+  // Without this flag, the listeners in registerWalletEvents() would treat
+  // those as external changes and re-run this same connect flow (or worse,
+  // used to just reload the page mid-connect, looping forever on wallets
+  // like Rabby Mobile). Suppress them for the duration of our own connect
+  // flow; re-enable once connected so a real, later switch is still picked up.
+  suppressWalletEvents = true;
   try {
     await withTimeout(
       window.ethereum.request({ method: "eth_requestAccounts" }),
@@ -349,19 +374,13 @@ async function connectWallet() {
 
     els.connectHint.textContent = "Finishing connection...";
     provider = new ethers.BrowserProvider(window.ethereum);
-    signer = await provider.getSigner();
-    userAddress = await signer.getAddress();
 
     // Reads go through readProvider (the user-configurable RPC), not the
-    // wallet's provider — only signing/sending (.connect(signer) below, and
-    // swapRouterWrite) needs the wallet at all.
+    // wallet's provider — only signing/sending (bound in bindAccount()
+    // below) needs the wallet at all.
     b0xGuessRead = new ethers.Contract(B0XGUESS_ADDRESS, B0XGUESS_ABI, readProvider);
-    b0xGuessWrite = b0xGuessRead.connect(signer);
     stakedTokenRead = new ethers.Contract(STAKED_TOKEN_ADDRESS, ERC20_ABI, readProvider);
-    stakedTokenWrite = stakedTokenRead.connect(signer);
     linkTokenRead = new ethers.Contract(LINK_TOKEN_ADDRESS, ERC20_ABI, readProvider);
-    linkTokenWrite = linkTokenRead.connect(signer);
-    swapRouterWrite = new ethers.Contract(UNISWAP_SWAP_ROUTER02_ADDRESS, SWAP_ROUTER_ABI, signer);
     quoterRead = new ethers.Contract(UNISWAP_QUOTER_V2_ADDRESS, QUOTER_ABI, readProvider);
 
     try {
@@ -370,7 +389,8 @@ async function connectWallet() {
       stakedDecimals = 18;
     }
 
-    els.walletAddress.textContent = shortAddr(userAddress);
+    await bindAccount();
+
     els.walletAddress.classList.remove("hidden");
     els.networkBadge.classList.remove("hidden");
     els.walletB0xBalance.classList.remove("hidden");
@@ -381,8 +401,6 @@ async function connectWallet() {
 
     registerContractEvents();
     await loadActivityHistory();
-    await loadMyBets(true);
-    await refreshAll();
     setInterval(refreshAll, 20000);
   } catch (err) {
     console.error("connectWallet failed:", err);
@@ -390,7 +408,7 @@ async function connectWallet() {
     els.connectHint.classList.add("error");
     els.connectHint.textContent = err.shortMessage || err.message || String(err);
   } finally {
-    suppressWalletReload = false;
+    suppressWalletEvents = false;
   }
 }
 
@@ -1338,20 +1356,67 @@ let walletEventsRegistered = false;
 // wallet_switchEthereumChain calls, so the resulting accountsChanged/
 // chainChanged events (fired for the switch we ourselves just requested)
 // don't get mistaken for an external change and reload the page mid-connect.
-let suppressWalletReload = false;
+let suppressWalletEvents = false;
 
-// Switching accounts/networks in the wallet (Rabby, MetaMask, ...) reloads
-// the page rather than trying to patch every piece of state in place —
-// simplest way to guarantee balances, contract instances, and event
-// listeners all end up consistent with the new account/chain.
+// Switching accounts in the wallet (Rabby, MetaMask, ...) rebinds in place —
+// new signer, new address, fresh balances/bets/stats for it — rather than
+// reloading the whole page. A full reload was the actual cause of the
+// "stuck reconnecting forever" loop on Rabby Mobile: our own connect flow
+// triggers these same events, the reload landed mid-handshake, and the
+// auto-reconnect on load just re-ran the whole thing again.
+async function handleAccountsChanged(accounts) {
+  if (!provider) return; // not connected yet — connectWallet() itself will pick up the account
+
+  if (accounts.length === 0) {
+    // Wallet fully revoked this site's access — drop back to the disconnected view.
+    userAddress = null;
+    els.app.classList.add("hidden");
+    els.walletAddress.classList.add("hidden");
+    els.networkBadge.classList.add("hidden");
+    els.walletB0xBalance.classList.add("hidden");
+    els.connectBtn.textContent = "Connect Wallet";
+    els.connectBtn.disabled = false;
+    els.connectHint.classList.remove("error");
+    els.connectHint.textContent = "Connect a wallet on the Base network to play.";
+    els.connectHint.classList.remove("hidden");
+    closeBetModal();
+    return;
+  }
+
+  const newAddress = accounts[0];
+  if (userAddress && newAddress.toLowerCase() === userAddress.toLowerCase()) return; // no real change
+
+  try {
+    await bindAccount();
+  } catch (err) {
+    console.error("Failed to switch account:", err);
+    els.connectHint.classList.remove("hidden");
+    els.connectHint.classList.add("error");
+    els.connectHint.textContent = err.shortMessage || err.message || String(err);
+  }
+}
+
+// Reads (pool stats, balances, etc.) all go through readProvider, not the
+// wallet — so switching networks in the wallet doesn't affect what's shown.
+// It only affects transactions: a bet/stake/withdraw signed while on the
+// wrong chain will simply fail. Surface that on the network badge instead of
+// reloading — no need to blow away the rest of the page over it.
+function handleChainChanged(chainIdHex) {
+  const onBase = chainIdHex.toLowerCase() === BASE_CHAIN_ID_HEX.toLowerCase();
+  els.networkBadge.textContent = onBase ? "Base" : "Wrong Network";
+  els.networkBadge.classList.toggle("warn", !onBase);
+}
+
 function registerWalletEvents() {
   if (walletEventsRegistered || !window.ethereum) return;
   walletEventsRegistered = true;
-  window.ethereum.on("accountsChanged", () => {
-    if (!suppressWalletReload) window.location.reload();
+  window.ethereum.on("accountsChanged", (accounts) => {
+    if (suppressWalletEvents) return;
+    handleAccountsChanged(accounts).catch((err) => console.error("accountsChanged handler failed:", err));
   });
-  window.ethereum.on("chainChanged", () => {
-    if (!suppressWalletReload) window.location.reload();
+  window.ethereum.on("chainChanged", (chainIdHex) => {
+    if (suppressWalletEvents) return;
+    handleChainChanged(chainIdHex);
   });
 }
 
