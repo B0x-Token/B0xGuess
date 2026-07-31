@@ -113,6 +113,19 @@ const els = {
   ownerStatus: document.getElementById("owner-status"),
 
   contractLink: document.getElementById("contract-link"),
+
+  modalOverlay: document.getElementById("bet-modal-overlay"),
+  modalEl: document.getElementById("bet-modal"),
+  modalClose: document.getElementById("bet-modal-close"),
+  modalIcon: document.getElementById("modal-icon"),
+  modalTitle: document.getElementById("modal-title"),
+  modalSubtitle: document.getElementById("modal-subtitle"),
+  modalScanner: document.getElementById("modal-scanner"),
+  modalResult: document.getElementById("modal-result"),
+  modalResultValue: document.getElementById("modal-result-value"),
+  modalResultDetail: document.getElementById("modal-result-detail"),
+  modalTimer: document.getElementById("modal-timer"),
+  modalTimerBar: document.getElementById("modal-timer-bar"),
 };
 
 els.contractLink.href = `${BASE_NETWORK_PARAMS.blockExplorerUrls[0]}/address/${B0XGUESS_ADDRESS}`;
@@ -136,6 +149,14 @@ const LINK_DECIMALS = 18;
 // "My Bets" pagination cursor — how many of the user's oldest bets are left
 // unfetched. null until the first load; 0n once there's nothing older left.
 let myBetsRemainingOffset = null;
+
+// The betID (bigint) the result modal is currently tracking, or null if
+// none is open. Only one bet's outcome is ever shown in the modal at a
+// time — if a second bet is placed while the first is still pending VRF,
+// the modal switches to tracking the new one; the first bet's result still
+// lands in "Recent Activity" / bet status text, it just won't reopen the modal.
+let activePendingBetId = null;
+let modalAutoCloseTimer = null;
 
 // Raw wallet B0x balance (wei), refreshed alongside the formatted display
 // text in refreshWalletInfo() — kept as a bigint so the Stake "Max" button
@@ -327,7 +348,6 @@ async function refreshBetEstimate() {
   const guess = Number(els.guessNumberInput.value);
 
   const amountStr = els.betAmountInput.value;
-  els.buyLinkSection.classList.remove("hidden");
 
   // Neither of these depends on the bet amount, so they're always kept
   // current — no need to type an amount first just to see your LINK
@@ -464,6 +484,63 @@ async function ensureAllowance(tokenRead, tokenWrite, owner, spender, neededWei,
   await tx.wait();
 }
 
+// --- Bet result modal ---
+// Opens right after a bet transaction confirms, before the Chainlink VRF
+// callback resolves it: glows through a shifting color spectrum while
+// pending. Once the matching ShowAnswer event arrives, it locks onto a
+// win (gold/green) or lose (red) glow and holds the result on screen for
+// 10 seconds before auto-closing.
+
+function resetModalTimer() {
+  if (modalAutoCloseTimer) {
+    clearTimeout(modalAutoCloseTimer);
+    modalAutoCloseTimer = null;
+  }
+  els.modalTimer.classList.add("hidden");
+  els.modalTimerBar.classList.remove("running");
+}
+
+function openBetModal(guess) {
+  resetModalTimer();
+  els.modalEl.classList.remove("state-win", "state-lose");
+  els.modalEl.classList.add("state-pending");
+  els.modalIcon.textContent = "📡";
+  els.modalTitle.textContent = "Transmitting Guess…";
+  els.modalSubtitle.textContent = `Guessing below ${guess} — awaiting Chainlink VRF randomness`;
+  els.modalResult.classList.add("hidden");
+  els.modalScanner.classList.remove("hidden");
+  els.modalOverlay.classList.remove("hidden");
+}
+
+function closeBetModal() {
+  els.modalOverlay.classList.add("hidden");
+  resetModalTimer();
+  activePendingBetId = null;
+}
+
+function showBetModalResult({ won, result, guess, amountWon }) {
+  els.modalEl.classList.remove("state-pending");
+  els.modalEl.classList.add(won ? "state-win" : "state-lose");
+  els.modalScanner.classList.add("hidden");
+  els.modalIcon.textContent = won ? "🏆" : "💥";
+  els.modalTitle.textContent = won ? "Target Acquired" : "Signal Lost";
+  els.modalSubtitle.textContent = `Rolled ${result} — needed below ${guess}`;
+  els.modalResult.classList.remove("hidden");
+  els.modalResultValue.textContent = won ? "YOU WON" : "YOU LOST";
+  els.modalResultDetail.textContent = won
+    ? `Payout: ${fmt(amountWon, stakedDecimals)} B0x`
+    : "Better luck on the next transmission.";
+
+  els.modalTimer.classList.remove("hidden");
+  els.modalTimerBar.classList.remove("running");
+  void els.modalTimerBar.offsetWidth; // force reflow so the width transition below restarts cleanly
+  els.modalTimerBar.classList.add("running");
+
+  modalAutoCloseTimer = setTimeout(closeBetModal, 10000);
+}
+
+els.modalClose.addEventListener("click", closeBetModal);
+
 // --- Placing a bet ---
 
 async function placeBet() {
@@ -501,9 +578,31 @@ async function placeBet() {
 
     setStatus(els.betStatus, "Placing bet...");
     const tx = await b0xGuessWrite.getRandomNumber(guess, amtWei);
-    await tx.wait();
+    const receipt = await tx.wait();
+
+    // Pull this bet's ID out of the confirmed receipt's GuessNote log, so
+    // the result modal can later match it against the ShowAnswer event
+    // that resolves it (see registerContractEvents()).
+    let placedBetId = null;
+    for (const log of receipt.logs) {
+      if (log.address.toLowerCase() !== B0XGUESS_ADDRESS.toLowerCase()) continue;
+      let parsed;
+      try {
+        parsed = b0xGuessRead.interface.parseLog(log);
+      } catch {
+        continue;
+      }
+      if (parsed?.name === "GuessNote" && parsed.args.user.toLowerCase() === userAddress.toLowerCase()) {
+        placedBetId = parsed.args.betID;
+        break;
+      }
+    }
 
     setStatus(els.betStatus, "Bet placed! Waiting on Chainlink VRF for the result (usually 10-30 seconds)...");
+    if (placedBetId !== null) {
+      openBetModal(guess);
+      activePendingBetId = placedBetId;
+    }
     await refreshAll();
     await loadMyBets(true);
   } catch (err) {
@@ -766,6 +865,10 @@ function registerContractEvents() {
       );
       refreshWalletInfo();
       loadMyBets(true);
+
+      if (activePendingBetId !== null && betID === activePendingBetId) {
+        showBetModalResult({ won, result, guess: usersGuess, amountWon });
+      }
     }
   });
 
