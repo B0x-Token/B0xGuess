@@ -263,6 +263,16 @@ function fmt(bigintValue, decimals, digits = 4) {
   return Number(ethers.formatUnits(bigintValue, decimals)).toFixed(digits);
 }
 
+// Fills an amount input with a value trimmed to a sensible number of
+// decimals instead of the raw 18-decimal wei string — 2 decimals once the
+// amount is 1 or more (100.0123091230138123 -> "100.01"), 7 decimals below
+// that so small amounts don't just round down to something misleading
+// (0.10000123233423 -> "0.1000012").
+function fmtMaxInput(bigintValue, decimals) {
+  const value = Number(ethers.formatUnits(bigintValue, decimals));
+  return value.toFixed(value >= 1 ? 2 : 7);
+}
+
 function fmtUsd(rawPrice) {
   // getPriceOFB0xINUSD()'s doc comment claims a ~1e12 scale, but tracing
   // its actual mulDiv chain (ETHUSDC[1e12] combined with ETHB0x[1e18] via
@@ -1259,7 +1269,7 @@ async function loadActivityHistory() {
 
 function buildMyBetLi(bet) {
   const li = document.createElement("li");
-  const displayId = bet.id + 1n;
+  const displayId = bet.id;
   if (bet.pending) {
     li.textContent = `#${displayId} — bet ${fmt(bet.amount, stakedDecimals)} B0x below ${bet.guess} — pending VRF result`;
   } else {
@@ -1351,7 +1361,7 @@ updateWinChance();
 els.betAmountInput.addEventListener("input", scheduleEstimate);
 els.betAmountMaxBtn.addEventListener("click", () => {
   const maxWei = currentMaxBetWei < userB0xBalanceWei ? currentMaxBetWei : userB0xBalanceWei;
-  els.betAmountInput.value = ethers.formatUnits(maxWei, stakedDecimals);
+  els.betAmountInput.value = fmtMaxInput(maxWei, stakedDecimals);
   scheduleEstimate();
 });
 els.placeBetBtn.addEventListener("click", placeBet);
