@@ -29,10 +29,9 @@ const LINK_APPROVAL_BUFFER = 0.002;
 // (which is already padded generously via the buffer).
 const LINK_COST_DISPLAY_MULTIPLIER = 350n;
 
-// "Buy LINK with ETH" targets a purchase of ~3x the current single-bet
-// "Est. LINK cost (yours)" — within the 2x-5x range needed to cover a
-// couple of bets — protected by a normal 5% slippage tolerance around
-// that target.
+// "Buy LINK with ETH" targets a purchase of ~10x the current single-bet
+// "Est. LINK cost (yours)" — protected by a normal 5% slippage tolerance
+// around that target.
 //
 // NOTE: an earlier version sized the ETH input for 5x while only
 // floor-protecting the output at 2x. Wallets correctly read that gap as a
@@ -40,7 +39,13 @@ const LINK_COST_DISPLAY_MULTIPLIER = 350n;
 // deliver less than 2x) but alarming, and exactly the kind of wide
 // tolerance that invites a sandwich attack. A tight tolerance around a
 // single target is the standard, correct pattern.
-const LINK_BUY_TARGET_MULTIPLIER = 3n;
+const LINK_BUY_TARGET_MULTIPLIER = 10n;
+
+// If the wallet doesn't hold at least 2x the ETH the 10x target would cost,
+// buyLink() steps down through these instead of just failing outright — each
+// checked the same way (need >= 2x its own ETH cost) until one fits, with 1x
+// as the last-resort floor (no headroom check — it's already the minimum).
+const LINK_BUY_FALLBACK_MULTIPLIERS = [5n, 3n, 1n];
 const LINK_BUY_SLIPPAGE_TOLERANCE = 0.05; // 5%
 const ETH_GAS_RESERVE = "0.0002"; // left unspent so the wallet can still pay gas for the swap itself
 
@@ -651,7 +656,7 @@ function applyBetEstimate({ guess, hasAmount, amtWei, maxBet, userLinkBal, posit
   const displayLinkCost = userLinkPortion * LINK_COST_DISPLAY_MULTIPLIER;
   els.estLinkCost.textContent = fmt(displayLinkCost, LINK_DECIMALS, 6) + " LINK";
 
-  // Buying LINK targets ~3x the current cost (LINK_BUY_TARGET_MULTIPLIER) — if
+  // Buying LINK targets ~10x the current cost (LINK_BUY_TARGET_MULTIPLIER) — if
   // the wallet already holds that much or more, there's nothing to buy yet.
   const buyTargetAmount = displayLinkCost * LINK_BUY_TARGET_MULTIPLIER;
   els.buyLinkSection.classList.toggle("hidden", userLinkBal >= buyTargetAmount);
@@ -942,20 +947,32 @@ async function buyLink() {
       throw new Error("This bet is fully LINK-subsidized right now — no need to buy any.");
     }
 
-    const targetOutput = singleBetCost * LINK_BUY_TARGET_MULTIPLIER;
-
     setStatus(els.buyLinkStatus, "Getting a quote from Uniswap...");
-    // getEthBalance is Multicall3's own built-in (batches a native-balance
-    // read alongside a contract call, which eth_call can't otherwise do).
-    const [quoteResult, ethBalance] = await multicall([
-      {
-        contract: quoterRead,
-        method: "quoteExactOutputSingle",
-        args: [[WETH_ADDRESS, LINK_TOKEN_ADDRESS, targetOutput, LINK_WETH_POOL_FEE, 0n]],
-      },
-      { contract: multicallRead, method: "getEthBalance", args: [userAddress] },
-    ]);
-    const [amountIn] = quoteResult;
+    // getEthBalance is Multicall3's own built-in (a plain view call, so it
+    // doesn't need the aggregate3 wrapper the per-tier quotes below use).
+    const ethBalance = await multicallRead.getEthBalance(userAddress);
+
+    // Start at the 10x target; step down through the fallback tiers if the
+    // wallet doesn't hold at least 2x the ETH a given tier would need — see
+    // LINK_BUY_FALLBACK_MULTIPLIERS comment. The last tier (1x) is used
+    // regardless of headroom; the hard affordability check further below
+    // still catches it if even that's too much.
+    const tiers = [LINK_BUY_TARGET_MULTIPLIER, ...LINK_BUY_FALLBACK_MULTIPLIERS];
+    let targetOutput, amountIn;
+    for (let i = 0; i < tiers.length; i++) {
+      targetOutput = singleBetCost * tiers[i];
+      const [quoteResult] = await multicall([
+        {
+          contract: quoterRead,
+          method: "quoteExactOutputSingle",
+          args: [[WETH_ADDRESS, LINK_TOKEN_ADDRESS, targetOutput, LINK_WETH_POOL_FEE, 0n]],
+        },
+      ]);
+      [amountIn] = quoteResult;
+
+      const isLastTier = i === tiers.length - 1;
+      if (isLastTier || ethBalance >= amountIn * 2n) break;
+    }
 
     // Standard tight slippage tolerance around the target, not a wide
     // floor-to-ceiling band — see LINK_BUY_TARGET_MULTIPLIER comment.
