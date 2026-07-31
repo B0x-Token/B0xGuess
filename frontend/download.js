@@ -7,7 +7,7 @@
   // Every file this site actually needs to run standalone, fetched by its
   // own relative URL — kept as a flat list rather than discovered
   // dynamically since a static site has no directory listing to query.
-  const FILES = ["index.html", "style.css", "app.js", "config.js", "starfield.js", "download.js"];
+  const FILES = ["index.html", "style.css", "app.js", "config.js", "starfield.js", "download.js", "logo.svg", "logo.png"];
 
   const btn = document.getElementById("download-all-btn");
   const status = document.getElementById("download-all-status");
@@ -23,7 +23,8 @@
         FILES.map(async (name) => {
           const res = await fetch(name, { cache: "no-store" });
           if (!res.ok) throw new Error(`Failed to fetch ${name} (HTTP ${res.status})`);
-          zip.file(name, await res.text());
+          // blob() rather than text() — logo.png is binary and text() would corrupt it.
+          zip.file(name, await res.blob());
         })
       );
 
