@@ -107,7 +107,6 @@ const els = {
   myBetsStatus: document.getElementById("my-bets-status"),
   myBetsLoadMoreBtn: document.getElementById("my-bets-load-more-btn"),
 
-  blankAmountInput: document.getElementById("blank-amount-input"),
   getBlankBtn: document.getElementById("get-blank-btn"),
   blankStatus: document.getElementById("blank-status"),
 
@@ -965,15 +964,14 @@ async function withdrawAll() {
 async function getBlank() {
   els.getBlankBtn.disabled = true;
   try {
-    const extraLINK = BigInt(els.blankAmountInput.value || "1");
     const unitPrice = await b0xGuessRead.requestPrice();
     const bufferWei = ethers.parseUnits(String(LINK_APPROVAL_BUFFER), LINK_DECIMALS);
-    const totalNeeded = unitPrice * extraLINK + bufferWei; // see LINK_APPROVAL_BUFFER comment
+    const totalNeeded = unitPrice + bufferWei; // see LINK_APPROVAL_BUFFER comment
 
     await ensureAllowance(linkTokenRead, linkTokenWrite, userAddress, B0XGUESS_ADDRESS, totalNeeded, els.blankStatus, "LINK");
 
     setStatus(els.blankStatus, "Requesting extra randomness...");
-    const tx = await b0xGuessWrite.getBlank(extraLINK);
+    const tx = await b0xGuessWrite.getBlank();
     await tx.wait();
 
     setStatus(els.blankStatus, "Requested.", "success");

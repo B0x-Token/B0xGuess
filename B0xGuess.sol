@@ -976,13 +976,18 @@ contract B0xGuess is VRFV2PlusWrapperConsumerBase {
         return tot;
     }
 
+
+
+    /// @notice Last Person to call Blank get this, shouldnt be used often at all.
+    address private blanker = address(0);
+
+
     /// @notice Requests an extra "blank" VRF request, in case Chainlink fulfillment failed to keep up
     /// @dev Incase of Chainlink failure -- pay for an extra "blank" VRF request
-    /// @param extraLINK Multiplier on the current unit request price to pay for this request
     /// @return requestId The ID of the newly created VRF request
-    function getBlank(uint256 extraLINK) public returns (uint256 requestId) {
+    function getBlank() public returns (uint256 requestId) {
    
-               
+               blanker = msg.sender;
           // Pull a quote, request, then refund whatever we didn't actually spend.
         uint256 quoted = requestPrice();
 
@@ -1010,6 +1015,7 @@ contract B0xGuess is VRFV2PlusWrapperConsumerBase {
     /// @param randomWords The random words returned by VRF; only randomWords[0] is used
     function fulfillRandomWords(uint256 /* requestId */, uint256[] memory randomWords) internal override {
         if (betid >= betidIN) {
+        	stakedToken.transfer(blanker, 1);
             return;
         }
 
