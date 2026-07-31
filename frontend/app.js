@@ -190,6 +190,8 @@ async function connectWallet() {
     return;
   }
 
+  registerWalletEvents(); // safety net — see registerWalletEvents() for why this can't just run once at script load
+
   await window.ethereum.request({ method: "eth_requestAccounts" });
   await ensureBaseNetwork();
 
@@ -927,7 +929,41 @@ els.checkpointBtn.addEventListener("click", runCheckpoint);
 els.setFreeBetBtn.addEventListener("click", setFreeBet);
 els.transferOwnerBtn.addEventListener("click", transferOwner);
 
-if (window.ethereum) {
+let walletEventsRegistered = false;
+
+// Switching accounts/networks in the wallet (Rabby, MetaMask, ...) reloads
+// the page rather than trying to patch every piece of state in place —
+// simplest way to guarantee balances, contract instances, and event
+// listeners all end up consistent with the new account/chain.
+function registerWalletEvents() {
+  if (walletEventsRegistered || !window.ethereum) return;
+  walletEventsRegistered = true;
   window.ethereum.on("accountsChanged", () => window.location.reload());
   window.ethereum.on("chainChanged", () => window.location.reload());
 }
+
+// window.ethereum may not exist yet at this exact point — some wallets (and
+// especially having more than one extension installed, e.g. Rabby +
+// MetaMask, racing to inject) finish injecting a moment after the page's own
+// scripts start running. A one-shot `if (window.ethereum)` check right here
+// can miss it and silently never attach the listeners above for the rest of
+// the page's life. Poll briefly instead of assuming it's already there.
+function whenEthereumReady(callback, attemptsLeft = 20) {
+  if (window.ethereum) {
+    callback();
+    return;
+  }
+  if (attemptsLeft <= 0) return;
+  setTimeout(() => whenEthereumReady(callback, attemptsLeft - 1), 100);
+}
+
+whenEthereumReady(() => {
+  registerWalletEvents();
+
+  // Auto-reconnect on load if this site is already authorized, so the reload
+  // above lands back in the connected view instead of dropping the user to
+  // "Connect Wallet" every time they switch accounts.
+  window.ethereum.request({ method: "eth_accounts" }).then((accounts) => {
+    if (accounts.length > 0) connectWallet();
+  }).catch((err) => console.warn("Auto-reconnect check failed:", err));
+});
