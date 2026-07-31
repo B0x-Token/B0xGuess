@@ -303,45 +303,52 @@ async function connectWallet() {
 
   registerWalletEvents(); // safety net — see registerWalletEvents() for why this can't just run once at script load
 
-  await window.ethereum.request({ method: "eth_requestAccounts" });
-  await ensureBaseNetwork();
-
-  provider = new ethers.BrowserProvider(window.ethereum);
-  signer = await provider.getSigner();
-  userAddress = await signer.getAddress();
-
-  // Reads go through readProvider (the user-configurable RPC), not the
-  // wallet's provider — only signing/sending (.connect(signer) below, and
-  // swapRouterWrite) needs the wallet at all.
-  b0xGuessRead = new ethers.Contract(B0XGUESS_ADDRESS, B0XGUESS_ABI, readProvider);
-  b0xGuessWrite = b0xGuessRead.connect(signer);
-  stakedTokenRead = new ethers.Contract(STAKED_TOKEN_ADDRESS, ERC20_ABI, readProvider);
-  stakedTokenWrite = stakedTokenRead.connect(signer);
-  linkTokenRead = new ethers.Contract(LINK_TOKEN_ADDRESS, ERC20_ABI, readProvider);
-  linkTokenWrite = linkTokenRead.connect(signer);
-  swapRouterWrite = new ethers.Contract(UNISWAP_SWAP_ROUTER02_ADDRESS, SWAP_ROUTER_ABI, signer);
-  quoterRead = new ethers.Contract(UNISWAP_QUOTER_V2_ADDRESS, QUOTER_ABI, readProvider);
-
   try {
-    stakedDecimals = await stakedTokenRead.decimals();
-  } catch {
-    stakedDecimals = 18;
+    await window.ethereum.request({ method: "eth_requestAccounts" });
+    await ensureBaseNetwork();
+
+    provider = new ethers.BrowserProvider(window.ethereum);
+    signer = await provider.getSigner();
+    userAddress = await signer.getAddress();
+
+    // Reads go through readProvider (the user-configurable RPC), not the
+    // wallet's provider — only signing/sending (.connect(signer) below, and
+    // swapRouterWrite) needs the wallet at all.
+    b0xGuessRead = new ethers.Contract(B0XGUESS_ADDRESS, B0XGUESS_ABI, readProvider);
+    b0xGuessWrite = b0xGuessRead.connect(signer);
+    stakedTokenRead = new ethers.Contract(STAKED_TOKEN_ADDRESS, ERC20_ABI, readProvider);
+    stakedTokenWrite = stakedTokenRead.connect(signer);
+    linkTokenRead = new ethers.Contract(LINK_TOKEN_ADDRESS, ERC20_ABI, readProvider);
+    linkTokenWrite = linkTokenRead.connect(signer);
+    swapRouterWrite = new ethers.Contract(UNISWAP_SWAP_ROUTER02_ADDRESS, SWAP_ROUTER_ABI, signer);
+    quoterRead = new ethers.Contract(UNISWAP_QUOTER_V2_ADDRESS, QUOTER_ABI, readProvider);
+
+    try {
+      stakedDecimals = await stakedTokenRead.decimals();
+    } catch {
+      stakedDecimals = 18;
+    }
+
+    els.walletAddress.textContent = shortAddr(userAddress);
+    els.walletAddress.classList.remove("hidden");
+    els.networkBadge.classList.remove("hidden");
+    els.walletB0xBalance.classList.remove("hidden");
+    els.connectBtn.textContent = "Connected";
+    els.connectBtn.disabled = true;
+    els.app.classList.remove("hidden");
+    els.connectHint.classList.add("hidden");
+
+    registerContractEvents();
+    await loadActivityHistory();
+    await loadMyBets(true);
+    await refreshAll();
+    setInterval(refreshAll, 20000);
+  } catch (err) {
+    console.error("connectWallet failed:", err);
+    els.connectHint.classList.remove("hidden");
+    els.connectHint.classList.add("error");
+    els.connectHint.textContent = err.shortMessage || err.message || String(err);
   }
-
-  els.walletAddress.textContent = shortAddr(userAddress);
-  els.walletAddress.classList.remove("hidden");
-  els.networkBadge.classList.remove("hidden");
-  els.walletB0xBalance.classList.remove("hidden");
-  els.connectBtn.textContent = "Connected";
-  els.connectBtn.disabled = true;
-  els.app.classList.remove("hidden");
-  els.connectHint.classList.add("hidden");
-
-  registerContractEvents();
-  await loadActivityHistory();
-  await loadMyBets(true);
-  await refreshAll();
-  setInterval(refreshAll, 20000);
 }
 
 // --- Reading on-chain state into the UI ---

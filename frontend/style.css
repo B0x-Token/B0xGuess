@@ -386,6 +386,10 @@ details.card summary {
   padding: 3rem 1rem;
 }
 
+#connect-hint.error {
+  color: var(--danger);
+}
+
 footer {
   text-align: center;
   padding: 1.5rem;
