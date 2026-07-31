@@ -328,6 +328,15 @@ async function connectWallet() {
   els.connectHint.classList.remove("error");
   els.connectHint.textContent = "Requesting account access — check your wallet app...";
 
+  // ensureBaseNetwork() below causes the wallet to emit its own chainChanged
+  // event for the switch we just asked for. Without this flag, the
+  // chainChanged listener in registerWalletEvents() reads that as an
+  // external network change and reloads the page mid-connect — which then
+  // re-triggers the auto-reconnect on load, re-runs ensureBaseNetwork(), and
+  // loops forever (seen on Rabby Mobile). Suppress reloads for the duration
+  // of our own connect flow; re-enable them once we're actually connected so
+  // a real, later network/account switch still reloads as intended.
+  suppressWalletReload = true;
   try {
     await withTimeout(
       window.ethereum.request({ method: "eth_requestAccounts" }),
@@ -380,6 +389,8 @@ async function connectWallet() {
     els.connectHint.classList.remove("hidden");
     els.connectHint.classList.add("error");
     els.connectHint.textContent = err.shortMessage || err.message || String(err);
+  } finally {
+    suppressWalletReload = false;
   }
 }
 
@@ -1323,6 +1334,12 @@ els.transferOwnerBtn.addEventListener("click", transferOwner);
 
 let walletEventsRegistered = false;
 
+// Set while connectWallet() is driving its own eth_requestAccounts/
+// wallet_switchEthereumChain calls, so the resulting accountsChanged/
+// chainChanged events (fired for the switch we ourselves just requested)
+// don't get mistaken for an external change and reload the page mid-connect.
+let suppressWalletReload = false;
+
 // Switching accounts/networks in the wallet (Rabby, MetaMask, ...) reloads
 // the page rather than trying to patch every piece of state in place —
 // simplest way to guarantee balances, contract instances, and event
@@ -1330,8 +1347,12 @@ let walletEventsRegistered = false;
 function registerWalletEvents() {
   if (walletEventsRegistered || !window.ethereum) return;
   walletEventsRegistered = true;
-  window.ethereum.on("accountsChanged", () => window.location.reload());
-  window.ethereum.on("chainChanged", () => window.location.reload());
+  window.ethereum.on("accountsChanged", () => {
+    if (!suppressWalletReload) window.location.reload();
+  });
+  window.ethereum.on("chainChanged", () => {
+    if (!suppressWalletReload) window.location.reload();
+  });
 }
 
 // window.ethereum may not exist yet at this exact point — some wallets (and
