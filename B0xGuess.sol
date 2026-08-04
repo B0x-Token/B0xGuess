@@ -812,7 +812,7 @@ contract B0xGuess is VRFV2PlusWrapperConsumerBase {
     function queryRequiredB0xAmount() public view returns (uint256 requiredAmount, uint256 requiredConfirmations) {
         uint256 currentPrice = getPriceOFB0xINUSD();
         uint256 amount = AmountWeOWE_PER_POSITION_Constant;
-        uint256 threshold = 3000;
+        uint256 threshold = 4000;
         uint256 MIN_AMOUNT = 0.0000001 * 10 ** 18; // 0.0000001 token minimum floor
         uint256 confirmations = 3 * 100;  // in practice 300, but really 3 confirmations we start at.
         for (uint256 i = 0; i < 50; i++) {
