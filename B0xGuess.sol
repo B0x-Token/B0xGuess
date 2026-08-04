@@ -629,9 +629,11 @@ contract B0xGuess is VRFV2PlusWrapperConsumerBase {
     ///      "ETH per B0x" depends on which token is currency0 vs currency1 —
     ///      verify via the pool's Initialize event before relying on the
     ///      division direction used downstream in getPriceOFB0xINUSD().
-    function getETHB0x_PricePrecise() public view returns (uint256 price) {
+   function getETHB0x_PricePrecise() public view returns (uint256 price) {
         // v4 slot0 only exposes sqrtPriceX96, tick, protocolFee, lpFee — no observation index/cardinality fields
+      
         (uint160 sqrtPriceX96, , , ) = stateView.getSlot0(POOL_ID);
+
 
         // Always route through mulDiv — avoids overflow regardless of how large
         // sqrtPriceX96 is, unlike the raw-multiply fast path which can overflow
@@ -641,6 +643,7 @@ contract B0xGuess is VRFV2PlusWrapperConsumerBase {
         return MulDiv.mulDiv(priceX128, 1e18, 1 << 128); // 1e18, NOT 1e24
     }
 
+    
     /// @notice Computes the current B0x price in USD by combining ETH/USDC and B0x/ETH pool data
     /// @dev Formula: ETH_USD * 1e18 / B0xEth_raw. This is only correct if
     ///      getETHB0x_PricePrecise() returns "B0x per 1 ETH" (i.e. currency0 = ETH,
@@ -649,8 +652,15 @@ contract B0xGuess is VRFV2PlusWrapperConsumerBase {
     ///      against the pool's actual currency0/currency1 before relying on this in production.
     /// @return PriceOf1B0x Price of 1 B0x token in USD, scaled by ~1e12 (same scale as getETHUSDC_PricePrecise())
     function getPriceOFB0xINUSD() public view returns (uint PriceOf1B0x) {
-        return MulDiv.mulDiv(getETHUSDC_PricePrecise(), 1e10, MulDiv.mulDiv(getETHB0x_PricePrecise(), 1e10, 1e12));
+        uint256 ethPrec = getETHB0x_PricePrecise();
+        uint256 denom = MulDiv.mulDiv(ethPrec, 1e10, 1e12);
+        if (denom == 0) {
+            denom = 1;
+        }
+        return MulDiv.mulDiv(getETHUSDC_PricePrecise(), 1e10, denom);
     }
+    
+    
 
     /// @notice Value most recently confirmed as pending, awaiting checkpoint confirmations for fee adjustment.
     uint256 public pendingFeeAmount;
@@ -812,10 +822,10 @@ contract B0xGuess is VRFV2PlusWrapperConsumerBase {
 
 	    if (confirmations < 10 * 100) {
                 confirmations = (confirmations * 105) / 100;
-	    } else if (confirmations >= 20 * 100) {
-                confirmations = 20 * 100;
+	    } else if (confirmations >= 15 * 100) {
+                confirmations = 15 * 100;
             } else {
-                confirmations = confirmations + 50;
+                confirmations = confirmations + 25;
             }
             
             amount = amount / 2; // divide by 2, integer-safe
@@ -864,13 +874,24 @@ contract B0xGuess is VRFV2PlusWrapperConsumerBase {
         uint256 quoted = requestPrice();
 
         uint256 subsidy = 0;
-        if (amt >= AmountWeOWE_PER_POSITION2 * 20) {
-            subsidy = FreeBetLink > quoted ? quoted : FreeBetLink;
-            uint256 contractBal = LINK.balanceOf(address(this));
-            if (subsidy > contractBal) {
-                subsidy = contractBal; // never try to pay out more than we hold
+        if(guess<51){
+		
+            if (amt >= AmountWeOWE_PER_POSITION2 * 20) {
+                subsidy = FreeBetLink > quoted ? quoted : FreeBetLink;
+                uint256 contractBal = LINK.balanceOf(address(this));
+                if (subsidy > contractBal) {
+                    subsidy = contractBal; // never try to pay out more than we hold
+                }
             }
-        }
+	}else{
+            if (esT-amt >= AmountWeOWE_PER_POSITION2 * 20) {
+                subsidy = FreeBetLink > quoted ? quoted : FreeBetLink;
+                uint256 contractBal = LINK.balanceOf(address(this));
+                if (subsidy > contractBal) {
+                    subsidy = contractBal; // never try to pay out more than we hold
+                }
+            }
+	}
 
         uint256 userPortion = quoted - subsidy;
         if (userPortion > 0) {
@@ -926,13 +947,24 @@ contract B0xGuess is VRFV2PlusWrapperConsumerBase {
         uint256 quoted = requestPrice();
 
         uint256 subsidy = 0;
-        if (amt >= AmountWeOWE_PER_POSITION2 * 20) {
-            subsidy = FreeBetLink > quoted ? quoted : FreeBetLink;
-            uint256 contractBal = LINK.balanceOf(address(this));
-            if (subsidy > contractBal) {
-                subsidy = contractBal; // never try to pay out more than we hold
+        if(guess<51){
+		
+            if (amt >= AmountWeOWE_PER_POSITION2 * 20) {
+                subsidy = FreeBetLink > quoted ? quoted : FreeBetLink;
+                uint256 contractBal = LINK.balanceOf(address(this));
+                if (subsidy > contractBal) {
+                    subsidy = contractBal; // never try to pay out more than we hold
+                }
             }
-        }
+	}else{
+            if (esT-amt >= AmountWeOWE_PER_POSITION2 * 20) {
+                subsidy = FreeBetLink > quoted ? quoted : FreeBetLink;
+                uint256 contractBal = LINK.balanceOf(address(this));
+                if (subsidy > contractBal) {
+                    subsidy = contractBal; // never try to pay out more than we hold
+                }
+            }
+	}
 
         uint256 userPortion = quoted - subsidy;
         if (userPortion > 0) {
@@ -1063,9 +1095,10 @@ contract B0xGuess is VRFV2PlusWrapperConsumerBase {
     /// @param randomWords The random words returned by VRF; only randomWords[0] is used
     function fulfillRandomWords(uint256 /* requestId */, uint256[] memory randomWords) internal override {
         if (betid >= betidIN) {
-        	stakedToken.transfer(blanker, 1);
+            stakedToken.transfer(blanker, 1);
             return;
         }
+        
 
         uint256 randomness = randomWords[0];
 
@@ -1121,21 +1154,20 @@ contract B0xGuess is VRFV2PlusWrapperConsumerBase {
         emit Staked(forWhom, amount);
     }
 
-    /// @notice Finds the largest guess for which `amt` can still be profitably wagered
+    
+    /// @notice Finds the largest guess (1-97) for which `amt` can still be profitably wagered
     /// @param amt The amount to wager; may be capped downward internally if the bankroll can't support it
     /// @return The highest guess value that is affordable and profitable for the (possibly capped) amount
     function maxGuessPerInput(uint amt) public view returns (uint) {
-        uint x = 0;
-
-        for (x = 0; x < 90; x++) {
-            if (MaxINForGuess(98 - x) < amt) {
-                amt = MaxINForGuess(99 - x);
+        for (uint256 guess = 97; guess > 0; guess--) {
+            if (MaxINForGuess(guess) < amt) {
+                amt = MaxINForGuess(guess);
             }
-            if (estOUTPUT(amt, 99 - x) > amt) {
-                break;
+            if (amt > 0 && estOUTPUT(amt, guess) > amt) {
+                return guess;
             }
         }
-        return 99 - x;
+        return 0; // no guess in [1,97] is affordable/profitable for any amount down to 0
     }
 
     /// @notice Estimates the payout for a given bet amount and guessed odds

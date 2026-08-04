@@ -481,9 +481,14 @@ function applyPoolInfo(price, poolRaw, unreleased, positionSize, freeBet) {
   els.statPool.textContent = fmt(pool, stakedDecimals) + " B0x";
   els.statMinbet.textContent = fmt(minBet, stakedDecimals) + " B0x";
   els.statFreebet.textContent = fmt(freeBet, LINK_DECIMALS, 6) + " LINK";
+  // Mirrors the contract's two subsidy branches (B0xGuess.getRandomNumber()):
+  // guess <=50 qualifies by BET AMOUNT, guess >50 qualifies by PROFIT instead —
+  // same threshold, different quantity it's measured against.
   const subsidyThreshold = positionSize * 20n;
   const subsidyThresholdDigits = Number(ethers.formatUnits(subsidyThreshold, stakedDecimals)) > 50 ? 0 : 4;
-  els.statFreebetLabel.textContent = `LINK Subsidy if Over ${fmt(subsidyThreshold, stakedDecimals, subsidyThresholdDigits)} B0x Bet at once`;
+  const subsidyThresholdText = fmt(subsidyThreshold, stakedDecimals, subsidyThresholdDigits);
+  els.statFreebetLabel.textContent =
+    `LINK Subsidy if Over ${subsidyThresholdText} B0x Bet at once (guess 50 or under), or Over ${subsidyThresholdText} B0x Profit (guess over 50)`;
 }
 
 // "shares" is an internal accounting ratio, not a token amount — totalSupply
@@ -547,12 +552,14 @@ async function refreshAll() {
     { contract: b0xGuessRead, method: "requestPrice" }, // 13 quoted
     { contract: linkTokenRead, method: "balanceOf", args: [B0XGUESS_ADDRESS] }, // 14 contractLinkBal
   ];
+  // estOUTPUT is fetched even with no amount typed (using a 1 B0x stand-in)
+  // because the subsidy check itself needs it for guess >50 — that branch
+  // qualifies by profit, not bet amount, so there's no amount-free shortcut.
+  const payoutAmtWei = hasAmount ? amtWei : ethers.parseUnits("1", stakedDecimals);
   const payoutIndex = calls.length;
-  if (hasAmount) {
-    // allowFailure so a bad estOUTPUT (edge-case guess/amount combo) can't
-    // drag down the pool/wallet/owner data in the same batch.
-    calls.push({ contract: b0xGuessRead, method: "estOUTPUT", args: [amtWei, guess], allowFailure: true });
-  }
+  // allowFailure so a bad estOUTPUT (edge-case guess/amount combo) can't
+  // drag down the pool/wallet/owner data in the same batch.
+  calls.push({ contract: b0xGuessRead, method: "estOUTPUT", args: [payoutAmtWei, guess], allowFailure: true });
 
   const results = await multicall(calls);
   const [
@@ -567,7 +574,7 @@ async function refreshAll() {
   applyOwnerPanel(owner, checkpointReady);
 
   try {
-    const payout = hasAmount ? results[payoutIndex] : undefined;
+    const payout = results[payoutIndex];
     applyBetEstimate({ guess, hasAmount, amtWei, maxBet, userLinkBal, positionSize, quoted, freeBetLink, contractLinkBal, payout });
   } catch (err) {
     // Same resilience the old standalone refreshBetEstimate() try/catch gave:
@@ -636,8 +643,10 @@ async function refreshBetEstimateInner() {
   // MaxINForGuess/LINK balance don't depend on the bet amount, so they're
   // always kept current — no need to type an amount first just to see your
   // LINK balance or how big a bet the bankroll can cover at this guess.
-  // estOUTPUT is only relevant (and only added to the batch) once an amount
-  // is typed — same call either way, one round trip either way.
+  // estOUTPUT is fetched even with no amount typed (using a 1 B0x stand-in)
+  // because guess >50's subsidy check qualifies by profit, not bet amount —
+  // there's no amount-free shortcut for that branch.
+  const payoutAmtWei = hasAmount ? amtWei : ethers.parseUnits("1", stakedDecimals);
   const calls = [
     { contract: b0xGuessRead, method: "MaxINForGuess", args: [guess] },
     { contract: linkTokenRead, method: "balanceOf", args: [userAddress] },
@@ -645,8 +654,8 @@ async function refreshBetEstimateInner() {
     { contract: b0xGuessRead, method: "requestPrice" },
     { contract: b0xGuessRead, method: "FreeBetLink" },
     { contract: linkTokenRead, method: "balanceOf", args: [B0XGUESS_ADDRESS] },
+    { contract: b0xGuessRead, method: "estOUTPUT", args: [payoutAmtWei, guess], allowFailure: true },
   ];
-  if (hasAmount) calls.push({ contract: b0xGuessRead, method: "estOUTPUT", args: [amtWei, guess] });
 
   const [maxBet, userLinkBal, positionSize, quoted, freeBetLink, contractLinkBal, payout] = await multicall(calls);
 
@@ -665,7 +674,7 @@ function applyBetEstimate({ guess, hasAmount, amtWei, maxBet, userLinkBal, posit
     // as if betting 1 B0x, so these stats/warnings don't just go blank.
     const fallbackAmtWei = ethers.parseUnits("1", stakedDecimals);
     const fallbackLinkCost = withLinkCostSafetyMargin(
-      estimateUserLinkPortion(fallbackAmtWei, positionSize, quoted, freeBetLink, contractLinkBal)
+      estimateUserLinkPortion(fallbackAmtWei, positionSize, quoted, freeBetLink, contractLinkBal, guess, payout)
     );
     els.estLinkCost.textContent = fmt(fallbackLinkCost, LINK_DECIMALS, 6) + " LINK";
     els.buyLinkSection.classList.toggle("hidden", userLinkBal >= fallbackLinkCost * LINK_BUY_TARGET_MULTIPLIER);
@@ -674,7 +683,7 @@ function applyBetEstimate({ guess, hasAmount, amtWei, maxBet, userLinkBal, posit
     const notEnoughB0x = fallbackAmtWei > userB0xBalanceWei;
     if (notEnoughB0x) {
       warnings.push(
-        `You don't have enough B0x for this bet. <a href="https://bzerox.org/?swap" target="_blank" rel="noopener noreferrer">Buy B0x with 0xBTC or ETH on Base</a>.`
+        `You don't have enough B0x for this bet. <a href="https://bzerox.org/?swap" rel="noopener noreferrer">Buy B0x with 0xBTC or ETH on Base</a>.`
       );
     }
     const fallbackNeedsLink = userLinkBal < fallbackLinkCost;
@@ -696,7 +705,7 @@ function applyBetEstimate({ guess, hasAmount, amtWei, maxBet, userLinkBal, posit
   els.estPayout.textContent = fmt(payout, stakedDecimals) + " B0x";
 
   const displayLinkCost = withLinkCostSafetyMargin(
-    estimateUserLinkPortion(amtWei, positionSize, quoted, freeBetLink, contractLinkBal)
+    estimateUserLinkPortion(amtWei, positionSize, quoted, freeBetLink, contractLinkBal, guess, payout)
   );
   els.estLinkCost.textContent = fmt(displayLinkCost, LINK_DECIMALS, 6) + " LINK";
 
@@ -714,7 +723,7 @@ function applyBetEstimate({ guess, hasAmount, amtWei, maxBet, userLinkBal, posit
     warnings.push("Bankroll too low for this bet — lower the amount.");
   } else if (amtWei > userB0xBalanceWei) {
     warnings.push(
-      `You don't have enough B0x for this bet. <a href="https://bzerox.org/?swap" target="_blank" rel="noopener noreferrer">Buy B0x with 0xBTC or ETH on Base</a>.`
+      `You don't have enough B0x for this bet. <a href="https://bzerox.org/?swap" rel="noopener noreferrer">Buy B0x with 0xBTC or ETH on Base</a>.`
     );
   }
   if (guess < 1 || guess > 97) warnings.push("Guess must be between 1 and 97.");
@@ -736,10 +745,15 @@ function applyBetEstimate({ guess, hasAmount, amtWei, maxBet, userLinkBal, posit
 }
 
 // Mirrors the subsidy math in B0xGuess.getRandomNumber() so the UI can
-// show how much LINK the *user* will actually be charged.
-function estimateUserLinkPortion(amtWei, positionSize, quoted, freeBetLink, contractLinkBal) {
+// show how much LINK the *user* will actually be charged. Like the
+// contract, guess <=50 qualifies by bet amount, guess >50 qualifies by
+// profit (payout - amount) instead — `payout` is only read in that second
+// case, so callers that only ever pass guess <=50 (e.g. setFreeBet's fixed
+// guess of 50) can leave it undefined.
+function estimateUserLinkPortion(amtWei, positionSize, quoted, freeBetLink, contractLinkBal, guess, payout) {
   let subsidy = 0n;
-  if (amtWei >= positionSize * 20n) {
+  const qualifies = guess < 51 ? amtWei >= positionSize * 20n : payout - amtWei >= positionSize * 20n;
+  if (qualifies) {
     subsidy = freeBetLink < quoted ? freeBetLink : quoted;
     if (subsidy > contractLinkBal) subsidy = contractLinkBal;
   }
@@ -892,14 +906,15 @@ async function placeBet() {
     // userLinkBal is only actually needed when userPortion > 0n, but fetching
     // it unconditionally here means one round trip instead of a conditional
     // second one.
-    const [positionSize, quoted, freeBetLink, contractLinkBal, userLinkBal] = await multicall([
+    const [positionSize, quoted, freeBetLink, contractLinkBal, userLinkBal, payout] = await multicall([
       { contract: b0xGuessRead, method: "AmountWeOWE_PER_POSITION2" },
       { contract: b0xGuessRead, method: "requestPrice" },
       { contract: b0xGuessRead, method: "FreeBetLink" },
       { contract: linkTokenRead, method: "balanceOf", args: [B0XGUESS_ADDRESS] },
       { contract: linkTokenRead, method: "balanceOf", args: [userAddress] },
+      { contract: b0xGuessRead, method: "estOUTPUT", args: [amtWei, guess] },
     ]);
-    const userPortion = estimateUserLinkPortion(amtWei, positionSize, quoted, freeBetLink, contractLinkBal);
+    const userPortion = estimateUserLinkPortion(amtWei, positionSize, quoted, freeBetLink, contractLinkBal, guess, payout);
     const bufferWei = ethers.parseUnits(String(LINK_APPROVAL_BUFFER), LINK_DECIMALS);
     const buffered = userPortion + bufferWei; // see LINK_APPROVAL_BUFFER comment — quoted price can drift a lot by execution time
 
@@ -975,13 +990,16 @@ async function getSingleBetLinkCost() {
       ? ethers.parseUnits(amountStr, stakedDecimals)
       : ethers.parseUnits(String(MIN_BET_B0X), stakedDecimals);
 
-  const [positionSize, quoted, freeBetLink, contractLinkBal] = await multicall([
+  const [positionSize, quoted, freeBetLink, contractLinkBal, payout] = await multicall([
     { contract: b0xGuessRead, method: "AmountWeOWE_PER_POSITION2" },
     { contract: b0xGuessRead, method: "requestPrice" },
     { contract: b0xGuessRead, method: "FreeBetLink" },
     { contract: linkTokenRead, method: "balanceOf", args: [B0XGUESS_ADDRESS] },
+    { contract: b0xGuessRead, method: "estOUTPUT", args: [amtWei, guess], allowFailure: true },
   ]);
-  return withLinkCostSafetyMargin(estimateUserLinkPortion(amtWei, positionSize, quoted, freeBetLink, contractLinkBal));
+  return withLinkCostSafetyMargin(
+    estimateUserLinkPortion(amtWei, positionSize, quoted, freeBetLink, contractLinkBal, guess, payout)
+  );
 }
 
 async function buyLink() {
@@ -1153,7 +1171,7 @@ async function setFreeBet() {
       { contract: b0xGuessRead, method: "FreeBetLink" },
       { contract: linkTokenRead, method: "balanceOf", args: [B0XGUESS_ADDRESS] },
     ]);
-    const userPortion = estimateUserLinkPortion(amtWei, positionSize, quoted, freeBetLink, contractLinkBal);
+    const userPortion = estimateUserLinkPortion(amtWei, positionSize, quoted, freeBetLink, contractLinkBal, guess);
     const bufferWei = ethers.parseUnits(String(LINK_APPROVAL_BUFFER), LINK_DECIMALS);
     const buffered = userPortion + bufferWei; // see LINK_APPROVAL_BUFFER comment — quoted price can drift a lot by execution time
     await ensureAllowance(linkTokenRead, linkTokenWrite, userAddress, B0XGUESS_ADDRESS, buffered, els.ownerStatus, "LINK");
