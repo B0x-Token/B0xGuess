@@ -270,6 +270,13 @@ const LINK_DECIMALS = 18;
 // unfetched. null until the first load; 0n once there's nothing older left.
 let myBetsRemainingOffset = null;
 
+// Bumped on every loadMyBets() call so overlapping calls (e.g. checkPendingBet's
+// poll and handleShowAnswer's poll both firing for the same resolved bet) can
+// tell they've been superseded and bail out before appending — otherwise both
+// calls' async awaits interleave around the reset's innerHTML clear and each
+// independently appends the same bets, producing duplicate rows.
+let myBetsLoadSeq = 0;
+
 // The betID (bigint) the result modal and bet-status text are currently
 // tracking, or null if none is open. Only one bet's outcome is ever shown
 // there at a time — if a second bet is placed while the first is still
@@ -295,14 +302,29 @@ function fmt(bigintValue, decimals, digits = 4) {
   return Number(ethers.formatUnits(bigintValue, decimals)).toFixed(digits);
 }
 
+// Truncates (never rounds) bigintValue to `digits` decimal places, done in
+// BigInt arithmetic so it's exact regardless of float precision. Rounding up
+// here would be wrong for a "Max" fill — e.g. 4.9053 rounding to 4.91 would
+// exceed the actual on-chain max and make the bet revert.
+function floorToDecimals(bigintValue, decimals, digits) {
+  // decimals may come in as a BigInt (e.g. from an ERC-20's decimals() call
+  // under ethers v6) — normalize before mixing it with the plain-number digits.
+  decimals = Number(decimals);
+  const scaled = bigintValue / 10n ** BigInt(decimals - digits); // value * 10^digits, floored
+  const divisor = 10n ** BigInt(digits);
+  const whole = scaled / divisor;
+  const frac = scaled % divisor;
+  return `${whole}.${frac.toString().padStart(digits, "0")}`;
+}
+
 // Fills an amount input with a value trimmed to a sensible number of
 // decimals instead of the raw 18-decimal wei string — 2 decimals once the
 // amount is 1 or more (100.0123091230138123 -> "100.01"), 7 decimals below
 // that so small amounts don't just round down to something misleading
-// (0.10000123233423 -> "0.1000012").
+// (0.10000123233423 -> "0.1000012"). Always truncates rather than rounds.
 function fmtMaxInput(bigintValue, decimals) {
   const value = Number(ethers.formatUnits(bigintValue, decimals));
-  return value.toFixed(value >= 1 ? 2 : 7);
+  return floorToDecimals(bigintValue, decimals, value >= 1 ? 2 : 7);
 }
 
 function fmtUsd(rawPrice) {
@@ -1358,6 +1380,8 @@ function buildMyBetLi(bet) {
 // backwards through older bets on each subsequent call (reset=true starts
 // over from the most recent bet — used on connect and after placing a bet).
 async function loadMyBets(reset) {
+  const seq = ++myBetsLoadSeq;
+
   if (reset) {
     els.myBetsList.innerHTML = "";
     myBetsRemainingOffset = null;
@@ -1365,7 +1389,9 @@ async function loadMyBets(reset) {
 
   try {
     if (myBetsRemainingOffset === null) {
-      myBetsRemainingOffset = await b0xGuessRead.getUserBetCount(userAddress);
+      const userBetCount = await b0xGuessRead.getUserBetCount(userAddress);
+      if (seq !== myBetsLoadSeq) return; // superseded by a newer loadMyBets() call
+      myBetsRemainingOffset = userBetCount;
       if (myBetsRemainingOffset === 0n) {
         setStatus(els.myBetsStatus, "No bets yet.");
         els.myBetsLoadMoreBtn.classList.add("hidden");
@@ -1382,11 +1408,14 @@ async function loadMyBets(reset) {
       { contract: b0xGuessRead, method: "getUserBetIds", args: [userAddress, offset, count] },
       { contract: b0xGuessRead, method: "betid" },
     ]);
+    if (seq !== myBetsLoadSeq) return; // superseded by a newer loadMyBets() call
 
     // All ids' betAmt/betOdds/betResults/winnings in one round trip, instead
     // of 4 calls per id.
     const reversedIds = [...ids].reverse();
     const perIdResults = await multicallPerId(b0xGuessRead, reversedIds, ["betAmt", "betOdds", "betResults", "winnings"]);
+    if (seq !== myBetsLoadSeq) return; // superseded by a newer loadMyBets() call
+
     const bets = reversedIds.map((id, i) => {
       const [amount, guess, result, amountWon] = perIdResults[i];
       return { id, amount, guess, result, amountWon, pending: id >= resolvedThrough };
@@ -1399,6 +1428,7 @@ async function loadMyBets(reset) {
     myBetsRemainingOffset = offset;
     els.myBetsLoadMoreBtn.classList.toggle("hidden", myBetsRemainingOffset === 0n);
   } catch (err) {
+    if (seq !== myBetsLoadSeq) return; // superseded by a newer loadMyBets() call
     // Most likely cause: the connected contract predates getUserBetCount/
     // getUserBetIds and needs redeploying — see B0xGuess.sol.
     setStatus(els.myBetsStatus, err.shortMessage || err.message || String(err), "error");
