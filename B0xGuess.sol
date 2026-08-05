@@ -447,7 +447,7 @@ contract B0xGuess is VRFV2PlusWrapperConsumerBase {
     uint256 public AmountWeOWE_PER_POSITION2 = (50 * 10 ** 18);
 
     /// @notice Address authorized to call owner-gated functions
-    address public owner = 0x23400DC0cC44fb8F295fD4C73bB19528066b59f3;
+    address public owner = 0x89dee55c9B849B7FB6526322714e7B0F1771D3E0;
 
     /// @notice Restricts a function to the current owner
     /// @dev Reverts with "Not owner of vault" if msg.sender is not owner
@@ -674,7 +674,7 @@ contract B0xGuess is VRFV2PlusWrapperConsumerBase {
     /// @notice Timestamp of the most recently passed checkpoint for fee adjustment.
     uint256 public lastFeeCheckpointTimestamp;
 
-    /// @notice Number of consecutive checkpoints passed for the current pendingFeeAmount (0, 1, or 2)
+    /// @notice Number of consecutive checkpoints passed for the current pendingFeeAmount (0, 1, 2, or 3)
     uint256 private checkpointsPassed;
 
     /// @notice Number of confirmations required before a value commits
@@ -812,7 +812,7 @@ contract B0xGuess is VRFV2PlusWrapperConsumerBase {
     function queryRequiredB0xAmount() public view returns (uint256 requiredAmount, uint256 requiredConfirmations) {
         uint256 currentPrice = getPriceOFB0xINUSD();
         uint256 amount = AmountWeOWE_PER_POSITION_Constant;
-        uint256 threshold = 4000;
+        uint256 threshold = 3000;
         uint256 MIN_AMOUNT = 0.0000001 * 10 ** 18; // 0.0000001 token minimum floor
         uint256 confirmations = 3 * 100;  // in practice 300, but really 3 confirmations we start at.
         for (uint256 i = 0; i < 50; i++) {
