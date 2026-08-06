@@ -112,6 +112,9 @@ const els = {
   stakeStatus: document.getElementById("stake-status"),
   statShares: document.getElementById("stat-shares"),
   statWithdrawable: document.getElementById("stat-withdrawable"),
+  withdrawAmountInput: document.getElementById("withdraw-amount-input"),
+  withdrawMaxBtn: document.getElementById("withdraw-max-btn"),
+  withdrawBtn: document.getElementById("withdraw-btn"),
   maxLossInput: document.getElementById("max-loss-input"),
   withdrawAllBtn: document.getElementById("withdraw-all-btn"),
   withdrawStatus: document.getElementById("withdraw-status"),
@@ -221,7 +224,7 @@ async function getCurrentGasPrice() {
 // that reverts makes the whole batch revert — same as a plain awaited call
 // throwing, so existing try/catch around a multicall() behaves like it did
 // around the Promise.all([...]) it replaced. Pass allowFailure: true for a
-// call that's expected to sometimes legitimately revert (e.g. currentForge()
+// call that's expected to sometimes legitimately revert (e.g. currentB0x()
 // before the pool has any bankroll) — its slot resolves to undefined instead
 // of failing the batch.
 async function multicall(calls) {
@@ -291,6 +294,17 @@ let pendingBetPollTimer = null;
 // text in refreshWalletInfo() — kept as a bigint so the Stake "Max" button
 // can fill the input exactly, without reparsing a rounded display string.
 let userB0xBalanceWei = 0n;
+
+// Raw staking-share balance and its currentB0x() withdrawable value (wei),
+// refreshed alongside the formatted display text in refreshWalletInfo().
+// withdraw() takes an amount in shares, not B0x, but the input the user
+// types is in B0x — these two let a partial withdrawal convert between
+// them: sharesToBurn = desiredB0xWei * userSharesWei / userWithdrawableWei.
+// That ratio is exact (not an approximation) because uOut() scales linearly
+// with the share amount and the fee rate depends only on the caller's
+// deposit age, not on how many shares are burned.
+let userSharesWei = 0n;
+let userWithdrawableWei = 0n;
 
 // MaxINForGuess(guess) result for the currently selected guess, kept as a
 // bigint so the Bet "Max" button can compare it against userB0xBalanceWei
@@ -522,6 +536,8 @@ function applyPoolInfo(price, poolRaw, unreleased, positionSize, freeBet) {
 // sidesteps the scale mismatch entirely.
 function applyWalletInfo(b0xBalance, shares, totalShares, withdrawable) {
   userB0xBalanceWei = b0xBalance;
+  userSharesWei = shares;
+  userWithdrawableWei = withdrawable ?? 0n;
   const b0xBalanceText = fmt(b0xBalance, stakedDecimals) + " B0x";
   els.walletB0xBalance.textContent = b0xBalanceText;
   els.statB0xBalance.textContent = b0xBalanceText;
@@ -563,10 +579,10 @@ async function refreshAll() {
     { contract: stakedTokenRead, method: "balanceOf", args: [userAddress] }, // 5 b0xBalance
     { contract: b0xGuessRead, method: "balanceOf", args: [userAddress] }, // 6 shares
     { contract: b0xGuessRead, method: "totalSupply" }, // 7 totalShares
-    // currentForge() -> uOut() divides by the contract's net staked bankroll,
+    // currentB0x() -> uOut() divides by the contract's net staked bankroll,
     // which is still 0 until someone calls stake() for the first time —
     // that division reverts. allowFailure isolates just this slot.
-    { contract: b0xGuessRead, method: "currentForge", args: [userAddress], allowFailure: true }, // 8 withdrawable
+    { contract: b0xGuessRead, method: "currentB0x", args: [userAddress], allowFailure: true }, // 8 withdrawable
     { contract: b0xGuessRead, method: "owner" }, // 9
     { contract: b0xGuessRead, method: "shouldWeCall_SetAmountWeOwePerPosition" }, // 10 checkpointReady
     { contract: b0xGuessRead, method: "MaxINForGuess", args: [guess] }, // 11 maxBet
@@ -613,7 +629,7 @@ async function refreshWalletInfo() {
     { contract: stakedTokenRead, method: "balanceOf", args: [userAddress] },
     { contract: b0xGuessRead, method: "balanceOf", args: [userAddress] },
     { contract: b0xGuessRead, method: "totalSupply" },
-    { contract: b0xGuessRead, method: "currentForge", args: [userAddress], allowFailure: true },
+    { contract: b0xGuessRead, method: "currentB0x", args: [userAddress], allowFailure: true },
   ]);
   applyWalletInfo(b0xBalance, shares, totalShares, withdrawable);
 }
@@ -785,18 +801,24 @@ function estimateUserLinkPortion(amtWei, positionSize, quoted, freeBetLink, cont
 
 // --- Approvals ---
 
-// Approves once, for a very large amount, rather than the exact amount
-// needed. Exact-amount approvals get fully consumed by the contract's own
-// transferFrom on every bet/stake, so the allowance is back to ~0 right
+// Approves a buffer above the exact amount needed, rather than the exact
+// amount itself. Exact-amount approvals get fully consumed by the contract's
+// own transferFrom on every bet/stake, so the allowance is back to ~0 right
 // after — meaning the check below would technically pass but almost never
-// actually skip anything. Approving MaxUint256 the first time means every
-// later call here just confirms the allowance is still huge and returns
-// immediately, with no repeat wallet prompts.
-async function ensureAllowance(tokenRead, tokenWrite, owner, spender, neededWei, statusEl, tokenLabel) {
+// actually skip anything. Approving a buffer means later calls here usually
+// just confirm the allowance still covers it and return immediately, with
+// no repeat wallet prompts — unless a later bet/stake exceeds the buffer,
+// in which case a fresh approval is prompted for that larger amount.
+// Capped deliberately (not MaxUint256): B0x gets 10x the amount just needed,
+// LINK gets a flat 1 LINK (VRF fees are a small fraction of that). Staking
+// passes exact=true instead — a stake's approval shouldn't leave a 10x
+// leftover allowance sitting on the pool contract.
+async function ensureAllowance(tokenRead, tokenWrite, owner, spender, neededWei, statusEl, tokenLabel, exact = false) {
   const current = await tokenRead.allowance(owner, spender);
   if (current >= neededWei) return;
+  const approveWei = exact ? neededWei : (tokenLabel === "LINK" ? ethers.parseUnits("1", 18) : neededWei * 10n);
   setStatus(statusEl, `Approving ${tokenLabel} (one-time)...`);
-  const tx = await tokenWrite.approve(spender, ethers.MaxUint256);
+  const tx = await tokenWrite.approve(spender, approveWei);
   await tx.wait();
 }
 
@@ -1097,7 +1119,7 @@ async function stake() {
   els.stakeBtn.disabled = true;
   try {
     const amtWei = ethers.parseUnits(els.stakeAmountInput.value, stakedDecimals);
-    await ensureAllowance(stakedTokenRead, stakedTokenWrite, userAddress, B0XGUESS_ADDRESS, amtWei, els.stakeStatus, "B0x");
+    await ensureAllowance(stakedTokenRead, stakedTokenWrite, userAddress, B0XGUESS_ADDRESS, amtWei, els.stakeStatus, "B0x", true);
 
     setStatus(els.stakeStatus, "Staking...");
     const tx = await b0xGuessWrite.stake(amtWei);
@@ -1113,15 +1135,51 @@ async function stake() {
   }
 }
 
+async function resolveMaxLossWei() {
+  if (els.maxLossInput.value) {
+    return ethers.parseUnits(els.maxLossInput.value, stakedDecimals);
+  }
+  return await b0xGuessRead.penalty(); // current pending payouts — passing this always succeeds right now
+}
+
+// Partial withdrawal. withdraw() on-chain burns an amount of staking shares,
+// but the input here is in B0x (matching "Withdrawable value" above), so the
+// desired B0x amount is converted to shares via the exact ratio described
+// at userSharesWei/userWithdrawableWei's declaration.
+async function withdraw() {
+  els.withdrawBtn.disabled = true;
+  try {
+    const amtWei = ethers.parseUnits(els.withdrawAmountInput.value, stakedDecimals);
+    if (userWithdrawableWei <= 0n) {
+      throw new Error("Nothing withdrawable.");
+    }
+    if (amtWei > userWithdrawableWei) {
+      throw new Error("Amount exceeds withdrawable value.");
+    }
+
+    let sharesWei = (amtWei * userSharesWei) / userWithdrawableWei;
+    if (sharesWei > userSharesWei) sharesWei = userSharesWei; // guard against rounding pushing it over
+
+    const maxLossWei = await resolveMaxLossWei();
+
+    setStatus(els.withdrawStatus, "Withdrawing...");
+    const tx = await b0xGuessWrite.withdraw(sharesWei, maxLossWei);
+    await tx.wait();
+
+    setStatus(els.withdrawStatus, "Withdrawn successfully.", "success");
+    els.withdrawAmountInput.value = "";
+    await refreshAll();
+  } catch (err) {
+    setStatus(els.withdrawStatus, err.shortMessage || err.message || String(err), "error");
+  } finally {
+    els.withdrawBtn.disabled = false;
+  }
+}
+
 async function withdrawAll() {
   els.withdrawAllBtn.disabled = true;
   try {
-    let maxLossWei;
-    if (els.maxLossInput.value) {
-      maxLossWei = ethers.parseUnits(els.maxLossInput.value, stakedDecimals);
-    } else {
-      maxLossWei = await b0xGuessRead.penalty(); // current pending payouts — passing this always succeeds right now
-    }
+    const maxLossWei = await resolveMaxLossWei();
 
     setStatus(els.withdrawStatus, "Withdrawing...");
     const tx = await b0xGuessWrite.perfectWithdraw(maxLossWei);
@@ -1473,6 +1531,10 @@ els.stakeBtn.addEventListener("click", stake);
 els.stakeMaxBtn.addEventListener("click", () => {
   els.stakeAmountInput.value = ethers.formatUnits(userB0xBalanceWei, stakedDecimals);
 });
+els.withdrawMaxBtn.addEventListener("click", () => {
+  els.withdrawAmountInput.value = fmtMaxInput(userWithdrawableWei, stakedDecimals);
+});
+els.withdrawBtn.addEventListener("click", withdraw);
 els.withdrawAllBtn.addEventListener("click", withdrawAll);
 els.getBlankBtn.addEventListener("click", getBlank);
 els.checkpointBtn.addEventListener("click", runCheckpoint);

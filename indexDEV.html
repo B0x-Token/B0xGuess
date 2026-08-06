@@ -3212,7 +3212,7 @@ body {
             <h2 class="section-title">How to Stake in B0x Guess (Become the House)</h2>
             <div class="section-content">
                 <p>Staked B0x becomes the bankroll that pays out winners. As a staker you earn a share of losing
-                    bets, minus a 2.5% withdrawal fee.</p>
+                    bets, minus a max of a 2.5% withdrawal fee that goes down over ~1 year.</p>
 
                 <div class="step-item">
                     <div class="step-number">1</div>
@@ -3253,8 +3253,8 @@ body {
 
                 <div class="warning-box">
                     <strong>Important:</strong> Staking is not risk-free yield — the pool you own a share of pays out
-                    guessers, so a run of guesser wins reduces its value just as a run of losses grows it. A 2.5% fee
-                    applies on withdrawal.
+                    guessers, so a run of guesser wins reduces its value just as a run of losses grows it. A max of a
+                    2.5% fee applies on withdrawal, going down over ~1 year.
                 </div>
             </div>
         </div>
@@ -6471,7 +6471,7 @@ TimeLockVault(vault).exitAllTogether(0, 25, new address[](0));
                 </div>
                 <div class="function-item">
                     <span class="function-name">withdraw(uint256 amount, uint256 maxLoss)</span><br>
-                    Burns staking shares and pays out B0x minus a 2.5% fee; no-ops if <code>maxLoss</code> is below the
+                    Burns staking shares and pays out B0x minus a max of a 2.5% fee (goes down over ~1 year); no-ops if <code>maxLoss</code> is below the
                     currently outstanding bet penalty
                 </div>
                 <div class="function-item">

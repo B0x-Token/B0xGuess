@@ -108,7 +108,7 @@
     <section class="card">
       <h2>Stake — Become the House</h2>
       <p class="hint">Staked B0x becomes bankroll that pays out winners. You earn a share of losing bets,
-        minus a 2.5% withdrawal fee.</p>
+        minus a max of a 2.5% withdrawal fee that goes down over ~1 year.</p>
 
       <label>
         Amount to stake (B0x)
@@ -126,10 +126,21 @@
       </div>
 
       <label>
+        Amount to withdraw (B0x)
+        <div class="amount-row">
+          <input type="number" id="withdraw-amount-input" min="0" step="any" placeholder="0.0" />
+          <button type="button" id="withdraw-max-btn" class="secondary">Max</button>
+        </div>
+      </label>
+
+      <label>
         Max acceptable pending payouts (defaults to current value)
         <input type="number" id="max-loss-input" min="0" step="any" placeholder="0.0" />
       </label>
-      <button id="withdraw-all-btn">Withdraw All</button>
+      <div class="amount-row">
+        <button id="withdraw-btn">Withdraw</button>
+        <button id="withdraw-all-btn" class="secondary">Withdraw All</button>
+      </div>
       <p id="withdraw-status" class="status"></p>
     </section>
 

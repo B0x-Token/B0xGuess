@@ -429,12 +429,6 @@ contract B0xGuess is VRFV2PlusWrapperConsumerBase {
     ///      bounded below by FREE_BET_LINK_FLOOR
     uint256 public FreeBetLink = 0.001 * 10 ** 18;
 
-    /// @notice Hard minimum value setFreeBetLink() will allow FreeBetLink to be set to
-    uint256 public constant FREE_BET_LINK_FLOOR = 0.00001 * 10 ** 18;
-
-    /// @notice Minimum Forge (stakedToken) bet size required to qualify for the LINK rebate
-    uint256 public constant REBATE_MIN_BET = 50 * 10 ** 18;
-
     // ── Modifiers ──────────────────────────────────────────────
 
     // MUST CHANGE BACK TO 50 * 10 ** 18 for launch
@@ -504,6 +498,10 @@ contract B0xGuess is VRFV2PlusWrapperConsumerBase {
     /// @notice Running lifetime guessing profit/loss per address, in stakedToken units
     mapping(address => int) public profitzGuess;
 
+    /// @notice timestamp of deposit and amount
+    mapping(address => uint256) public depositTimestamp;
+    
+    
     /// @notice Every bet ID placed by a given address, in the order they were placed.
     /// @dev Lets the frontend fetch "my bets" directly instead of scanning the
     ///      whole [0, betidIN) range or filtering event logs. Use
@@ -675,13 +673,13 @@ contract B0xGuess is VRFV2PlusWrapperConsumerBase {
     uint256 public lastFeeCheckpointTimestamp;
 
     /// @notice Number of consecutive checkpoints passed for the current pendingFeeAmount (0, 1, 2, or 3)
-    uint256 private checkpointsPassed;
+    uint256 public checkpointsPassed;
 
     /// @notice Number of confirmations required before a value commits
-    uint256 private constant REQUIRED_CHECKPOINTS = 4;
+    uint256 public constant REQUIRED_CHECKPOINTS = 4;
 
     /// @notice Minimum time between each checkpoint confirmation
-    uint256 private constant CHECKPOINT_DELAY = 46 hours;
+    uint256 public constant CHECKPOINT_DELAY = 46 hours;
 
     /// @notice Checks whether calling setAmountWeOwePerPosition() right now would
     ///         actually change state, or would just waste gas on a no-op / revert
@@ -812,7 +810,7 @@ contract B0xGuess is VRFV2PlusWrapperConsumerBase {
     function queryRequiredB0xAmount() public view returns (uint256 requiredAmount, uint256 requiredConfirmations) {
         uint256 currentPrice = getPriceOFB0xINUSD();
         uint256 amount = AmountWeOWE_PER_POSITION_Constant;
-        uint256 threshold = 3000;
+        uint256 threshold = 4000;
         uint256 MIN_AMOUNT = 0.0000001 * 10 ** 18; // 0.0000001 token minimum floor
         uint256 confirmations = 3 * 100;  // in practice 300, but really 3 confirmations we start at.
         for (uint256 i = 0; i < 50; i++) {
@@ -820,10 +818,10 @@ contract B0xGuess is VRFV2PlusWrapperConsumerBase {
                 break;
             }
 
-	    if (confirmations < 10 * 100) {
+	    if (confirmations < 6 * 100) {
                 confirmations = (confirmations * 105) / 100;
-	    } else if (confirmations >= 15 * 100) {
-                confirmations = 15 * 100;
+	    } else if (confirmations >= 9 * 100) {
+                confirmations = 9 * 100;
             } else {
                 confirmations = confirmations + 25;
             }
@@ -1145,6 +1143,20 @@ contract B0xGuess is VRFV2PlusWrapperConsumerBase {
         // default now that the multiply/divide no longer needs it.
         uint256 poolBalance = IERC20(address(stakedToken)).balanceOf(address(this)) - unreleased;
         uint256 toAdd = MulDiv.mulDiv(amount, totalSupply, poolBalance);
+        
+        
+        
+        uint256 oldShares = _balances[forWhom];
+        if (oldShares == 0) {
+            depositTimestamp[forWhom] = block.timestamp;
+        } else {
+            // weighted average, weighted by shares
+            depositTimestamp[forWhom] =
+                (depositTimestamp[forWhom] * oldShares + block.timestamp * toAdd) / (oldShares + toAdd);
+        }
+
+
+
         _balances[forWhom] += toAdd;
         totalSupply += toAdd;
         profitz[forWhom] -= int(amount);
@@ -1153,6 +1165,38 @@ contract B0xGuess is VRFV2PlusWrapperConsumerBase {
 
         emit Staked(forWhom, amount);
     }
+
+
+    /// @notice Computes the withdrawal fee, in basis points, currently applicable to `user`
+    /// @dev Fee decreases in six discrete steps as time elapses since `user`'s
+    ///      recorded deposit timestamp (see `depositTimestamp`, set/updated in
+    ///      `stakeForSomeoneElse`). Because `depositTimestamp` is a single
+    ///      weighted-average value per address rather than per-deposit, multiple
+    ///      stakes to the same address blend into one effective age — this
+    ///      function does not distinguish principal by when it was actually
+    ///      deposited. Schedule (age -> fee):
+    ///        < 30 days  -> 2.50%
+    ///        < 60 days  -> 2.00%
+    ///        < 91 days  -> 1.50%
+    ///        < 120 days -> 1.00%
+    ///        < 175 days -> 0.50%
+    ///        < 358 days -> 0.25%
+    ///        else       -> 0.00%
+    ///      Basis points are out of 100,000 (not the usual 10,000) to allow the
+    ///      0.25% tier to be expressed as an exact integer (250).
+    /// @param user The address whose deposit age is used to determine the fee tier
+    /// @return The withdrawal fee for `user`, in basis points out of 100,000
+    function withdrawFeeBps(address user) public view returns (uint256) {
+            uint256 age = block.timestamp - depositTimestamp[user];
+            if (age < 30 days)  return 2500; // 2.5%
+            if (age < 60 days)  return 2000; // 1.5%
+            if (age < 91 days) return 1500;  // 1%
+            if (age < 120 days) return 1000;  // 1%
+            if (age < 175 days) return 500;  // 0.5%  //under ~1/2 year
+            if (age < 358 days) return 250;  // 0.25%  //under ~1 year
+        return 0;
+    }
+
 
     
     /// @notice Finds the largest guess (1-97) for which `amt` can still be profitably wagered
@@ -1203,19 +1247,23 @@ contract B0xGuess is VRFV2PlusWrapperConsumerBase {
     /// @dev Withdrawal estimator
     /// @param amountOut The amount of staking shares to estimate a withdrawal for
     /// @return The estimated stakedToken received after fees
-    function withEstimator(uint256 amountOut) public view returns (uint256) {
-        uint256 v = (975 * uOut(amountOut) / 1000);
+    function withEstimator(uint256 amountOut, address forWhom) public view returns (uint256) {
+        uint256 feeBps = withdrawFeeBps(forWhom); // or forWhom
+        uint256 v = ((100000 - feeBps) * uOut(amountOut)) / 100000;
         return v;
     }
+
 
     /// @notice Estimates the net stakedToken `forWhom` could withdraw right now, after the 2.5% fee
     /// @dev Withdrawal estimator
     /// @param forWhom The address whose full share balance to estimate a withdrawal for
     /// @return The estimated stakedToken received after fees
-    function currentForge(address forWhom) public view returns (uint256) {
-        uint256 v = (975 * uOut(balanceOf(forWhom)) / 1000);
+    function currentB0x(address forWhom) public view returns (uint256) {
+        uint256 feeBps = withdrawFeeBps(forWhom);
+        uint256 v = ((100000 - feeBps) * uOut(balanceOf(forWhom))) / 100000;
         return v;
     }
+
 
     /// @notice Withdraws the caller's entire staking-share balance, subject to a max acceptable penalty
     /// @dev Prevents you from withdrawing if large bets are in play
@@ -1223,6 +1271,7 @@ contract B0xGuess is VRFV2PlusWrapperConsumerBase {
     function perfectWithdraw(uint maxLoss) public {
         withdraw(balanceOf(msg.sender), maxLoss);
     }
+    
 
     /// @notice Converts a staking-share amount into stakedToken, net of outstanding bet penalty
     /// @param amount The staking-share amount to convert
@@ -1233,6 +1282,7 @@ contract B0xGuess is VRFV2PlusWrapperConsumerBase {
         tot = amt - MulDiv.mulDiv(amt, penalty(), stakeMinusUnreleased);
         return tot;
     }
+    
 
     /// @notice Burns `amount` staking shares and pays out the underlying stakedToken, minus a 2.5% fee
     /// @dev 2.5% fee on withdrawals back to holders. No-op if `maxLoss` is below the current outstanding penalty.
@@ -1246,15 +1296,19 @@ contract B0xGuess is VRFV2PlusWrapperConsumerBase {
         require(amount <= _balances[msg.sender], "withdraw: balance is lower");
 
         uint OutEst = uOut(amount);
+        uint256 feeBps = withdrawFeeBps(msg.sender);
+        uint256 feeAmt = (OutEst * feeBps) / 100000;
+        uint256 netAmt = OutEst - feeAmt;
+        
 
         unchecked {
             _balances[msg.sender] -= amount;
             totalSupply = totalSupply - amount;
-            profitz[msg.sender] += int(OutEst * 975 / 1000);
+            profitz[msg.sender] += int(netAmt);
         }
 
-        require(stakedToken.transfer(address(this), (OutEst * 25 / 1000)));
-        require(stakedToken.transfer(msg.sender, ((OutEst * 975) / 1000)));
+        require(stakedToken.transfer(address(this), feeAmt));
+        require(stakedToken.transfer(msg.sender, netAmt));
 
         emit Withdrawn(msg.sender, amount);
     }
@@ -1263,7 +1317,7 @@ contract B0xGuess is VRFV2PlusWrapperConsumerBase {
     /// @param user The address to query
     /// @return The combined realized-plus-withdrawable profit/loss for `user`
     function Profit(address user) public view returns (int) {
-        uint256 withdrawable = withEstimator(balanceOf(user));
+        uint256 withdrawable = withEstimator(balanceOf(user), user);
         int profit = profitz[user] + int(withdrawable);
         return profit;
     }

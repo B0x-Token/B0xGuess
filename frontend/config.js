@@ -39,7 +39,7 @@ const MULTICALL3_ABI = [
 ];
 
 // --- Deployed addresses (Base mainnet) ---
-const B0XGUESS_ADDRESS = "0x050F31Ed5096075a087cF79b354134C574807e37";
+const B0XGUESS_ADDRESS = "0x57da35b42B97908255D5B1655DaC6ed936fc3668";
 const STAKED_TOKEN_ADDRESS = "0x6B19E31C1813cD00b0d47d798601414b79A3e8AD"; // B0x
 const LINK_TOKEN_ADDRESS = "0x88Fb150BDc53A65fe94Dea0c9BA0a6dAf8C6e196"; // hardcoded in B0xGuess.sol's constructor
 
@@ -49,7 +49,7 @@ const B0XGUESS_ABI = [
   "function owner() view returns (address)",
   "function stakedToken() view returns (address)",
   "function balanceOf(address account) view returns (uint256)",
-  "function currentForge(address forWhom) view returns (uint256)",
+  "function currentB0x(address forWhom) view returns (uint256)",
   "function totalSupply() view returns (uint256)",
   "function unreleased() view returns (uint256)",
   "function betid() view returns (uint256)",
