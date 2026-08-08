@@ -1,0 +1,259 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>B0x Guess — Base</title>
+
+  <meta property="og:type" content="website" />
+  <meta property="og:site_name" content="B0x Guess" />
+  <meta property="og:title" content="B0x Guess — Interstellar Wagering Protocol" />
+  <meta property="og:description" content="Guess a number between 1 and 97 and win B0x on Base. Lower guesses pay out more." />
+  <meta property="og:url" content="https://guess.bzerox.org/" />
+  <meta property="og:image" content="https://guess.bzerox.org/logo.png" />
+
+  <meta name="twitter:card" content="summary" />
+  <meta name="twitter:title" content="B0x Guess — Interstellar Wagering Protocol" />
+  <meta name="twitter:description" content="Guess a number between 1 and 97 and win B0x on Base. Lower guesses pay out more." />
+  <meta name="twitter:image" content="https://guess.bzerox.org/logo.png" />
+
+  <meta name="theme-color" content="#0a0a1a" />
+
+  <link rel="icon" type="image/svg+xml" href="logo.svg" />
+  <link rel="icon" type="image/png" href="logo.png" />
+  <link rel="apple-touch-icon" href="logo.png" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link
+    href="https://fonts.googleapis.com/css2?family=Orbitron:wght@500;700;800;900&family=Exo+2:ital,wght@0,400;0,500;0,600;1,400&display=swap"
+    rel="stylesheet"
+  />
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+
+  <canvas id="starfield"></canvas>
+
+  <header class="topbar">
+    <h1>B0x <span class="accent-text">Guess</span><span class="topbar-tagline">Interstellar Wagering Protocol</span></h1>
+    <div class="topbar-right">
+      <a class="topbar-link" href="https://dev.bzerox.org/#how-to-guess" target="_blank" rel="noopener noreferrer">How to Guides</a>
+      <div class="wallet-box">
+        <span id="network-badge" class="badge hidden">Base</span>
+        <span id="wallet-address" class="hidden"></span>
+        <span id="wallet-b0x-balance" class="badge hidden"></span>
+        <button id="connect-btn">Connect Wallet</button>
+      </div>
+    </div>
+  </header>
+
+  <main id="app" class="hidden">
+
+    <!-- Pool / price info -->
+    <section class="card">
+      <h2>House Stats</h2>
+      <div class="stat-grid">
+        <div class="stat"><span class="label">B0x price (USD)</span><span id="stat-price">—</span></div>
+        <div class="stat"><span class="label">Pool balance</span><span id="stat-pool">—</span></div>
+        <div class="stat"><span class="label">Min bet</span><span id="stat-minbet">—</span></div>
+        <div class="stat"><span class="label" id="stat-freebet-label">LINK Subsidy</span><span id="stat-freebet">—</span></div>
+      </div>
+    </section>
+
+    <!-- Buy B0x -->
+    <section class="card buy-b0x-banner">
+      <a class="link-button buy-b0x-button" href="https://bzerox.org/?swap" rel="noopener noreferrer">Buy B0x</a>
+    </section>
+
+    <!-- Play -->
+    <section class="card">
+      <h2>Play</h2>
+      <p class="hint">Guess a number between 1 and 97. A random number from 0–99 is drawn — you win if it's
+        <em>below</em> your guess. Lower guesses pay out more per B0x wagered.</p>
+
+      <label>
+        Your guess (1–97)
+        <div class="guess-row">
+          <input type="range" id="guess-input" min="1" max="97" value="50" />
+          <input type="number" id="guess-number-input" min="1" max="97" step="1" value="50" />
+        </div>
+      </label>
+      <p class="hint">Win chance: <strong id="win-chance-value">50%</strong> (<span id="win-chance-fraction">50 out of 100</span>)</p>
+
+      <label>
+        Bet amount (B0x)
+        <div class="amount-row">
+          <input type="number" id="bet-amount-input" min="0.01" step="0.01" placeholder="0.0" />
+          <button type="button" id="bet-amount-max-btn" class="secondary">Max</button>
+        </div>
+      </label>
+
+      <div class="stat-grid">
+        <div class="stat"><span class="label">Your B0x balance</span><span id="stat-b0x-balance">—</span></div>
+        <div class="stat"><span class="label">Potential payout</span><span id="est-payout">—</span></div>
+        <div class="stat"><span class="label">Max bet at this guess</span><span id="est-maxbet">—</span></div>
+        <div class="stat"><span class="label">Est. LINK cost (yours)</span><span id="est-link-cost">—</span></div>
+        <div class="stat"><span class="label">Your LINK balance</span><span id="stat-link-balance">—</span></div>
+      </div>
+
+      <div id="buy-link-section">
+        <button id="buy-link-btn" class="secondary">Buy LINK with ETH (Uniswap)</button>
+        <p class="hint">Swaps ETH for LINK on the LINK/WETH 0.3% Uniswap v3 pool, targeting about 10x the current
+          Est. LINK cost with a 5% slippage tolerance. If your wallet doesn't hold at least 2x the ETH that would
+          need, it steps down to 5x, then 3x, then 1x — whichever tier you can afford.</p>
+        <p id="buy-link-status" class="status"></p>
+      </div>
+
+      <p id="bet-warning" class="warning hidden"></p>
+
+      <button id="place-bet-btn">Place Bet</button>
+      <p id="bet-status" class="status"></p>
+    </section>
+
+    <!-- My Bets — reads straight from the contract's per-address bet index,
+         no event-log scanning needed -->
+    <section class="card">
+      <h2>My Bets</h2>
+      <ul id="my-bets-list" class="activity-feed"></ul>
+      <p id="my-bets-status" class="status"></p>
+      <button id="my-bets-load-more-btn" class="secondary hidden">Load Older Bets</button>
+    </section>
+
+    <!-- Stake / become the house -->
+    <section class="card">
+      <h2>Stake — Become the House</h2>
+      <p class="hint">Staked B0x becomes bankroll that pays out winners. You earn a share of losing bets,
+        minus a max of a 2.5% withdrawal fee that goes down over ~1 year.</p>
+
+      <label>
+        Amount to stake (B0x)
+        <div class="amount-row">
+          <input type="number" id="stake-amount-input" min="0" step="any" placeholder="0.0" />
+          <button type="button" id="stake-max-btn" class="secondary">Max</button>
+        </div>
+      </label>
+      <button id="stake-btn">Stake</button>
+      <p id="stake-status" class="status"></p>
+
+      <div class="stat-grid">
+        <div class="stat"><span class="label">Your pool ownership</span><span id="stat-shares">—</span></div>
+        <div class="stat"><span class="label">Withdrawable value</span><span id="stat-withdrawable">—</span></div>
+      </div>
+
+      <label>
+        Amount to withdraw (B0x)
+        <div class="amount-row">
+          <input type="number" id="withdraw-amount-input" min="0" step="any" placeholder="0.0" />
+          <button type="button" id="withdraw-max-btn" class="secondary">Max</button>
+        </div>
+      </label>
+
+      <label>
+        Max acceptable pending payouts (defaults to current value)
+        <input type="number" id="max-loss-input" min="0" step="any" placeholder="0.0" />
+      </label>
+      <div class="amount-row">
+        <button id="withdraw-btn">Withdraw</button>
+        <button id="withdraw-all-btn" class="secondary">Withdraw All</button>
+      </div>
+      <p id="withdraw-status" class="status"></p>
+    </section>
+
+    <!-- Recent activity -->
+    <section class="card">
+      <h2>Recent Activity</h2>
+      <ul id="activity-feed" class="activity-feed"></ul>
+    </section>
+
+    <!-- Advanced: manual VRF top-up, for when a request seems stuck -->
+    <details class="card">
+      <summary>Advanced: Buy Extra VRF Request</summary>
+      <p class="hint">If Chainlink seems stuck, anyone can pay for an extra "blank" randomness request to help
+        clear the queue. This costs LINK and does not affect your own bet.</p>
+      <button id="get-blank-btn">Buy Extra Request</button>
+      <p id="blank-status" class="status"></p>
+    </details>
+
+    <!-- Owner-only controls, shown only if the connected wallet is the contract owner -->
+    <section id="owner-panel" class="card hidden">
+      <h2>Owner Controls</h2>
+
+      <div class="owner-row">
+        <span>Position-size checkpoint ready to advance:</span>
+        <span id="checkpoint-ready">—</span>
+        <button id="checkpoint-btn">Run Checkpoint</button>
+      </div>
+
+      <button id="set-free-bet-btn">Set Rebate</button>
+
+      <label>
+        Transfer ownership to
+        <input type="text" id="new-owner-input" placeholder="0x..." />
+      </label>
+      <button id="transfer-owner-btn">Transfer Ownership</button>
+
+      <p id="owner-status" class="status"></p>
+    </section>
+
+  </main>
+
+  <p id="connect-hint">Connect a wallet on the Base network to play.</p>
+
+  <footer>
+    <a id="contract-link" href="#" target="_blank" rel="noopener">
+      View contract on BaseScan
+    </a>
+
+    <div class="download-all-wrap">
+      <button id="download-all-btn" class="secondary">Download All Website Files to Run Locally</button>
+      <p id="download-all-status" class="status"></p>
+    </div>
+
+    <div class="rpc-settings">
+      <label>
+        Read RPC endpoint (contract reads only — your wallet still signs transactions)
+        <input type="text" id="rpc-url-input" placeholder="https://..." />
+      </label>
+      <p class="hint">
+        Need another option? <a href="https://chainlist.org/chain/8453" target="_blank" rel="noopener noreferrer">chainlist.org/chain/8453</a>
+        lists public Base RPC endpoints — pick one and paste its URL above.
+      </p>
+      <div class="rpc-settings-buttons">
+        <button id="rpc-url-save-btn" class="secondary">Save &amp; Reload</button>
+        <button id="rpc-url-reset-btn" class="secondary">Reset to Default</button>
+      </div>
+      <p id="rpc-url-status" class="status"></p>
+    </div>
+  </footer>
+
+  <!-- Bet result modal — glows through a shifting color spectrum while a bet
+       awaits its Chainlink VRF callback, then locks onto a win/lose color
+       and holds the result on screen for 10 seconds. -->
+  <div id="bet-modal-overlay" class="modal-overlay hidden">
+    <div id="bet-modal" class="bet-modal state-pending">
+      <div class="modal-ring"></div>
+      <div class="modal-panel">
+        <button id="bet-modal-close" class="modal-close" aria-label="Close">&times;</button>
+        <div class="modal-content">
+          <div class="modal-icon" id="modal-icon">📡</div>
+          <h3 id="modal-title">Transmitting Guess…</h3>
+          <p id="modal-subtitle">Awaiting Chainlink VRF randomness</p>
+          <div class="modal-scanner" id="modal-scanner"><div class="modal-scanner-bar"></div></div>
+          <div class="modal-result hidden" id="modal-result">
+            <div class="modal-result-value" id="modal-result-value">—</div>
+            <div class="modal-result-detail" id="modal-result-detail"></div>
+          </div>
+        </div>
+        <div class="modal-timer hidden" id="modal-timer"><div class="modal-timer-bar" id="modal-timer-bar"></div></div>
+      </div>
+    </div>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/ethers@6.13.4/dist/ethers.umd.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
+  <script src="config.js"></script>
+  <script src="starfield.js"></script>
+  <script src="download.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
