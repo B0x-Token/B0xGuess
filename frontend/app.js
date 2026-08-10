@@ -466,7 +466,7 @@ async function connectWallet() {
   try {
     await withTimeout(
       window.ethereum.request({ method: "eth_requestAccounts" }),
-      30000,
+      90000,
       "Requesting account access"
     );
 
