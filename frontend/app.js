@@ -375,6 +375,24 @@ function withTimeout(promise, ms, label) {
 }
 
 async function ensureBaseNetwork() {
+  // Some mobile wallet in-app browsers (Rabby Mobile in particular) hang on
+  // wallet_switchEthereumChain even when it's a same-chain no-op. Skip the
+  // request entirely if the wallet is already on Base — this is also what
+  // makes reconnecting (already-connected auto-reconnect, or re-clicking
+  // Connect Wallet after a prior success) fast and hang-proof.
+  try {
+    const currentChainId = await withTimeout(
+      window.ethereum.request({ method: "eth_chainId" }),
+      15000,
+      "Reading current network"
+    );
+    if (currentChainId && currentChainId.toLowerCase() === BASE_CHAIN_ID_HEX.toLowerCase()) {
+      return;
+    }
+  } catch (readError) {
+    console.warn("eth_chainId check failed, falling back to switch request:", readError);
+  }
+
   try {
     await withTimeout(
       window.ethereum.request({
@@ -938,6 +956,11 @@ els.modalClose.addEventListener("click", closeBetModal);
 async function placeBet() {
   els.placeBetBtn.disabled = true;
   try {
+    const currentChainId = await window.ethereum.request({ method: "eth_chainId" });
+    if (currentChainId.toLowerCase() !== BASE_CHAIN_ID_HEX.toLowerCase()) {
+      throw new Error("Your wallet isn't on Base network. Switch to Base in your wallet app and try again.");
+    }
+
     const guess = Number(els.guessNumberInput.value);
     const amountStr = els.betAmountInput.value;
     if (!amountStr || Number(amountStr) <= 0) {
